@@ -1,8 +1,0 @@
-{
-  "domain": "tuya_dp_sender",
-  "name": "Tuya DP Sender",
-  "version": "1.0.0",
-  "codeowners": [],
-  "dependencies": ["zha"],
-  "iot_class": "local_push"
-}

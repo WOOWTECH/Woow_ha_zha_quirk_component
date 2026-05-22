@@ -1,0 +1,65 @@
+send_dp:
+  name: Send Tuya DP
+  description: Send a raw Tuya Data Point command to a device via ZHA.
+  fields:
+    ieee:
+      name: IEEE Address
+      description: "Device IEEE address (e.g. cc:86:ec:ff:fe:a1:ea:33)"
+      required: true
+      selector:
+        text:
+    dp:
+      name: DP Number
+      description: "Tuya Data Point number (1=control, 2=position, 5=direction)"
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 255
+    dp_type:
+      name: DP Type
+      description: "1=BOOL, 2=VALUE(4-byte), 4=ENUM(1-byte)"
+      required: false
+      default: 4
+      selector:
+        select:
+          options:
+            - label: "BOOL"
+              value: "1"
+            - label: "VALUE"
+              value: "2"
+            - label: "ENUM"
+              value: "4"
+    value:
+      name: Value
+      description: "Value to send"
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+
+send_dp_string:
+  name: Send Tuya DP String
+  description: Send a string value to a Tuya Data Point via ZHA (dp_type=3 STRING).
+  fields:
+    ieee:
+      name: IEEE Address
+      description: "Device IEEE address (e.g. a4:c1:38:0c:bc:72:be:6d)"
+      required: true
+      selector:
+        text:
+    dp:
+      name: DP Number
+      description: "Tuya Data Point number for string values (e.g. 105-108 for switch labels)"
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 255
+    value:
+      name: Text Value
+      description: "String value to send (max ~20 chars, UTF-8)"
+      required: true
+      selector:
+        text:

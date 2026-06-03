@@ -24,9 +24,7 @@ which ZHA skips for cluster handler creation.
 """
 
 import logging
-from typing import Any
 
-from zigpy.quirks import CustomCluster
 from zigpy.quirks.v2 import EntityType, QuirkBuilder
 from zigpy.zcl import foundation
 from zigpy.zcl.clusters.general import OnOff
@@ -46,28 +44,19 @@ ALL_ONOFF_EP = 200  # virtual endpoint for All On/Off
 class AllOnOffCluster(LocalDataCluster, OnOff):
     """Virtual OnOff cluster that controls all real endpoints simultaneously.
 
-    Placed on virtual endpoint 200, this cluster intercepts on/off/toggle
-    commands and fans them out to every real endpoint's OnOff cluster.
-    The ZHA switch platform creates a single "All On/Off" entity from it.
+    Placed on virtual endpoint 200, this cluster intercepts on/off attribute
+    writes and fans them out as on/off commands to every real endpoint's
+    OnOff cluster.
+
+    ZHA's quirks v2 `.switch()` creates a ConfigurableAttributeSwitch entity
+    that uses write_attributes (not command) for on/off control, so we
+    override write_attributes to intercept on_off writes and fan out.
     """
 
     cluster_id = OnOff.cluster_id  # 0x0006
 
-    async def command(
-        self,
-        command_id: foundation.GeneralCommand | int,
-        *args,
-        manufacturer=None,
-        expect_reply: bool = True,
-        **kwargs,
-    ):
-        """Intercept on/off/toggle and send to all real endpoints."""
-        # command_id: 0x00=off, 0x01=on, 0x02=toggle
-        if command_id not in (0x00, 0x01, 0x02):
-            return foundation.GENERAL_COMMANDS[
-                foundation.GeneralCommand.DEFAULT_RESPONSE
-            ].schema(command_id=command_id, status=foundation.Status.SUCCESS)
-
+    async def _fan_out_command(self, command_id: int) -> None:
+        """Send on/off/toggle command to all real endpoints."""
         for ep_id, ep in sorted(self.endpoint.device.endpoints.items()):
             if ep_id in (0, ALL_ONOFF_EP, 242):
                 continue
@@ -85,7 +74,47 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
                     ep_id, command_id, exc_info=True,
                 )
 
-        # Update own on_off attribute to reflect desired state
+    async def write_attributes(
+        self,
+        attributes: dict,
+        manufacturer=None,
+        **kwargs,
+    ) -> list:
+        """Intercept on_off attribute writes and fan out commands."""
+        on_off_val = None
+        for attr_name, value in list(attributes.items()):
+            resolved = attr_name
+            if isinstance(attr_name, str):
+                resolved = attr_name
+            elif isinstance(attr_name, int) and attr_name == OnOff.AttributeDefs.on_off.id:
+                resolved = OnOff.AttributeDefs.on_off.name
+
+            if resolved == OnOff.AttributeDefs.on_off.name:
+                on_off_val = value
+
+        if on_off_val is not None:
+            cmd = 0x01 if on_off_val else 0x00
+            await self._fan_out_command(cmd)
+
+        # Delegate to LocalDataCluster to update local cache
+        return await super().write_attributes(attributes, manufacturer=manufacturer, **kwargs)
+
+    async def command(
+        self,
+        command_id: foundation.GeneralCommand | int,
+        *args,
+        manufacturer=None,
+        expect_reply: bool = True,
+        **kwargs,
+    ):
+        """Intercept on/off/toggle and send to all real endpoints."""
+        if command_id not in (0x00, 0x01, 0x02):
+            return foundation.GENERAL_COMMANDS[
+                foundation.GeneralCommand.DEFAULT_RESPONSE
+            ].schema(command_id=command_id, status=foundation.Status.SUCCESS)
+
+        await self._fan_out_command(command_id)
+
         if command_id == 0x01:
             self._update_attribute(OnOff.AttributeDefs.on_off.id, True)
         elif command_id == 0x00:
@@ -102,10 +131,7 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
 # ────────────────────────────────────────────────────────────────
 (
     QuirkBuilder("_TZ2000_sayvzx8wgxqoxfuj", "S2100-1001")
-    .replace_cluster_occurrences(
-        TuyaZBOnOffAttributeCluster,
-        replace_client_instances=False,
-    )
+    .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=1)
     .enum(
         TuyaZBOnOffAttributeCluster.AttributeDefs.backlight_mode.name,
         SwitchBackLight,
@@ -124,10 +150,8 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
 # ────────────────────────────────────────────────────────────────
 (
     QuirkBuilder("_TZ2000_vvxwtxzf96vvarzj", "S2100-1002")
-    .replace_cluster_occurrences(
-        TuyaZBOnOffAttributeCluster,
-        replace_client_instances=False,
-    )
+    .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=1)
+    .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=2)
     .enum(
         TuyaZBOnOffAttributeCluster.AttributeDefs.backlight_mode.name,
         SwitchBackLight,
@@ -156,10 +180,9 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
 # ────────────────────────────────────────────────────────────────
 (
     QuirkBuilder("_TZ2000_bi57zocaqionffns", "S2100-1003")
-    .replace_cluster_occurrences(
-        TuyaZBOnOffAttributeCluster,
-        replace_client_instances=False,
-    )
+    .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=1)
+    .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=2)
+    .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=3)
     .enum(
         TuyaZBOnOffAttributeCluster.AttributeDefs.backlight_mode.name,
         SwitchBackLight,
@@ -188,10 +211,10 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
 # ────────────────────────────────────────────────────────────────
 (
     QuirkBuilder("_TZ2000_o1yvtxphiwt5cwif", "S2100-1004")
-    .replace_cluster_occurrences(
-        TuyaZBOnOffAttributeCluster,
-        replace_client_instances=False,
-    )
+    .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=1)
+    .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=2)
+    .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=3)
+    .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=4)
     .enum(
         TuyaZBOnOffAttributeCluster.AttributeDefs.backlight_mode.name,
         SwitchBackLight,

@@ -44,19 +44,30 @@ ALL_ONOFF_EP = 200  # virtual endpoint for All On/Off
 class AllOnOffCluster(LocalDataCluster, OnOff):
     """Virtual OnOff cluster that controls all real endpoints simultaneously.
 
-    Placed on virtual endpoint 200, this cluster intercepts on/off attribute
-    writes and fans them out as on/off commands to every real endpoint's
-    OnOff cluster.
+    Placed on virtual endpoint 200, this cluster intercepts on/off commands
+    and fans them out to every real endpoint's OnOff cluster.
 
-    ZHA's quirks v2 `.switch()` creates a ConfigurableAttributeSwitch entity
-    that uses write_attributes (not command) for on/off control, so we
-    override write_attributes to intercept on_off writes and fan out.
+    ZHA auto-discovers a standard Switch entity for this cluster. The Switch
+    entity calls OnOffClusterHandler.turn_on() → cluster.on() → command(0x01),
+    which we intercept here to fan out.
     """
 
     cluster_id = OnOff.cluster_id  # 0x0006
 
-    async def _fan_out_command(self, command_id: int) -> None:
-        """Send on/off/toggle command to all real endpoints."""
+    async def command(
+        self,
+        command_id: foundation.GeneralCommand | int,
+        *args,
+        manufacturer=None,
+        expect_reply: bool = True,
+        **kwargs,
+    ):
+        """Intercept on/off/toggle and send to all real endpoints."""
+        if command_id not in (0x00, 0x01, 0x02):
+            return foundation.GENERAL_COMMANDS[
+                foundation.GeneralCommand.Default_Response
+            ].schema(command_id=command_id, status=foundation.Status.SUCCESS)
+
         for ep_id, ep in sorted(self.endpoint.device.endpoints.items()):
             if ep_id in (0, ALL_ONOFF_EP, 242):
                 continue
@@ -74,54 +85,13 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
                     ep_id, command_id, exc_info=True,
                 )
 
-    async def write_attributes(
-        self,
-        attributes: dict,
-        manufacturer=None,
-        **kwargs,
-    ) -> list:
-        """Intercept on_off attribute writes and fan out commands."""
-        on_off_val = None
-        for attr_name, value in list(attributes.items()):
-            resolved = attr_name
-            if isinstance(attr_name, str):
-                resolved = attr_name
-            elif isinstance(attr_name, int) and attr_name == OnOff.AttributeDefs.on_off.id:
-                resolved = OnOff.AttributeDefs.on_off.name
-
-            if resolved == OnOff.AttributeDefs.on_off.name:
-                on_off_val = value
-
-        if on_off_val is not None:
-            cmd = 0x01 if on_off_val else 0x00
-            await self._fan_out_command(cmd)
-
-        # Delegate to LocalDataCluster to update local cache
-        return await super().write_attributes(attributes, manufacturer=manufacturer, **kwargs)
-
-    async def command(
-        self,
-        command_id: foundation.GeneralCommand | int,
-        *args,
-        manufacturer=None,
-        expect_reply: bool = True,
-        **kwargs,
-    ):
-        """Intercept on/off/toggle and send to all real endpoints."""
-        if command_id not in (0x00, 0x01, 0x02):
-            return foundation.GENERAL_COMMANDS[
-                foundation.GeneralCommand.DEFAULT_RESPONSE
-            ].schema(command_id=command_id, status=foundation.Status.SUCCESS)
-
-        await self._fan_out_command(command_id)
-
         if command_id == 0x01:
             self._update_attribute(OnOff.AttributeDefs.on_off.id, True)
         elif command_id == 0x00:
             self._update_attribute(OnOff.AttributeDefs.on_off.id, False)
 
         return foundation.GENERAL_COMMANDS[
-            foundation.GeneralCommand.DEFAULT_RESPONSE
+            foundation.GeneralCommand.Default_Response
         ].schema(command_id=command_id, status=foundation.Status.SUCCESS)
 
 
@@ -163,14 +133,6 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
     )
     .adds_endpoint(endpoint_id=ALL_ONOFF_EP)
     .adds(AllOnOffCluster, endpoint_id=ALL_ONOFF_EP)
-    .switch(
-        OnOff.AttributeDefs.on_off.name,
-        OnOff.cluster_id,
-        endpoint_id=ALL_ONOFF_EP,
-        entity_type=EntityType.STANDARD,
-        translation_key="all_on_off",
-        fallback_name="All On/Off",
-    )
     .add_to_registry()
 )
 
@@ -194,14 +156,6 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
     )
     .adds_endpoint(endpoint_id=ALL_ONOFF_EP)
     .adds(AllOnOffCluster, endpoint_id=ALL_ONOFF_EP)
-    .switch(
-        OnOff.AttributeDefs.on_off.name,
-        OnOff.cluster_id,
-        endpoint_id=ALL_ONOFF_EP,
-        entity_type=EntityType.STANDARD,
-        translation_key="all_on_off",
-        fallback_name="All On/Off",
-    )
     .add_to_registry()
 )
 
@@ -226,13 +180,5 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
     )
     .adds_endpoint(endpoint_id=ALL_ONOFF_EP)
     .adds(AllOnOffCluster, endpoint_id=ALL_ONOFF_EP)
-    .switch(
-        OnOff.AttributeDefs.on_off.name,
-        OnOff.cluster_id,
-        endpoint_id=ALL_ONOFF_EP,
-        entity_type=EntityType.STANDARD,
-        translation_key="all_on_off",
-        fallback_name="All On/Off",
-    )
     .add_to_registry()
 )

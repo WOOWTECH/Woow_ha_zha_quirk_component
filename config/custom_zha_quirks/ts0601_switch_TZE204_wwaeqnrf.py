@@ -41,11 +41,22 @@ Device Signature (from scan_device):
     Output: [0x0021 GreenPower]
 """
 
+import logging
+
 import zigpy.types as t
 from zigpy.quirks.v2 import EntityType
 from zigpy.zcl import foundation
-from zhaquirks.tuya import TuyaData, TuyaDPType
+from zhaquirks.tuya import (
+    TUYA_MCU_COMMAND,
+    TuyaCommand,
+    TuyaData,
+    TuyaDatapointData,
+    TuyaDPType,
+)
 from zhaquirks.tuya.builder import TuyaQuirkBuilder
+from zhaquirks.tuya.mcu import TuyaMCUCluster
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -95,6 +106,60 @@ def _str_to_raw_tuya(value) -> TuyaData:
     else:
         td.raw = str(value)[:12].encode("utf-8")
     return td
+
+
+# Screen label attribute name → DP ID mapping
+_SCREEN_LABEL_DPS = {
+    "screen_label_1": 105,
+    "screen_label_2": 106,
+    "screen_label_3": 107,
+    "screen_label_4": 108,
+}
+
+
+class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
+    """TuyaMCU cluster with direct string DP write support.
+
+    Overrides write_attributes to handle screen_label_* attributes
+    directly, bypassing TuyaClusterData (which only supports int values).
+    """
+
+    async def write_attributes(self, attributes, manufacturer=None, **kwargs):
+        """Handle string-type screen label attributes directly."""
+        regular_attrs = {}
+        for attr_name, value in attributes.items():
+            # Resolve int attr IDs to names
+            if isinstance(attr_name, int):
+                attr_def = self.attributes.get(attr_name)
+                name = attr_def.name if attr_def else None
+            else:
+                name = attr_name
+
+            if name in _SCREEN_LABEL_DPS:
+                # Send directly as Tuya DP command, bypassing TuyaClusterData
+                dp_id = _SCREEN_LABEL_DPS[name]
+                tuya_data = _str_to_raw_tuya(value)
+                dpd = TuyaDatapointData(dp=dp_id, data=tuya_data)
+                cmd = TuyaCommand(
+                    status=0,
+                    tsn=self.endpoint.device.application.get_sequence(),
+                    datapoints=[dpd],
+                )
+                await self.command(0x00, cmd)
+                # Update local cache
+                attr_id = self.attributes_by_name[name].id
+                self._update_attribute(attr_id, value)
+                _LOGGER.debug(
+                    "Screen label DP%d written: %s", dp_id, value,
+                )
+            else:
+                regular_attrs[attr_name] = value
+
+        if regular_attrs:
+            return await super().write_attributes(
+                regular_attrs, manufacturer=manufacturer, **kwargs
+            )
+        return [[foundation.WriteAttributesStatusRecord(foundation.Status.SUCCESS)]]
 
 
 # ────────────────────────────────────────────────────────────────
@@ -305,5 +370,5 @@ def _str_to_raw_tuya(value) -> TuyaData:
         dp_converter=_str_to_raw_tuya,
     )
     .skip_configuration()
-    .add_to_registry()
+    .add_to_registry(replacement_cluster=ScreenLabelTuyaMCUCluster)
 )

@@ -56,7 +56,7 @@
 | 10 | Zemismart 4-Gang Screen Switch | 4-Gang Touch Switch | `_TZE204_wwaeqnrf` | `switch` | Screen label write, countdown timer, child lock, LED colors |
 | 11 | Tuya Curtain Track | Curtain Track Motor | `_TZE200_nogaemzt` | `cover` | Motor direction, limit switches, motor mode |
 | 12 | Simon SM0502 | 2-Gang Dimmer Switch | `_TZ2000_qc1ntn3c` | `light` + `number` | Min/max brightness split, All On/Off virtual endpoint, indicator LED |
-| 13 | Tuya TS0502B | CCT Dimmable Light | `_TZ3000_yeygk4hw` | `light` | Kelvin↔mireds auto-conversion, CCT-only mode fix (2500-5500K) |
+| 13 | Tuya TS0502B | CCT Dimmable Light | `_TZ3000_yeygk4hw` | `light` | Kelvin↔mireds auto-conversion, CCT-only mode fix (2500-6500K) |
 
 ---
 
@@ -104,7 +104,7 @@ Standard ZCL CCT dimmable light (NOT Tuya MCU). Silicon Labs EFR32MG24 chip. The
 | Feature | Cluster | Attribute | Entity Type | Description |
 |---------|---------|-----------|-------------|-------------|
 | Light | 0x0006 + 0x0008 | `on_off` + `current_level` | Standard (light) | Dimmable CCT light, brightness 0-254 |
-| Color Temperature | 0x0300 | `color_temperature` (0x0007) | Standard (light) | 2500-5500K, auto Kelvin↔mireds conversion |
+| Color Temperature | 0x0300 | `color_temperature` (0x0007) | Standard (light) | 2500-6500K, auto Kelvin↔mireds conversion |
 | Color Capabilities | 0x0300 | `color_capabilities` (0x400A) | — | Forced to 0x10 (CCT only, removes xy mode) |
 
 **Kelvin↔Mireds Conversion:**
@@ -118,7 +118,7 @@ The device stores color temperature in Kelvin but ZCL expects mireds (1,000,000 
 |------------------|-------------|--------------|
 | `color_temperature` (0x0007) | 5499 (Kelvin) | 181 (mireds) → HA shows 5524K |
 | `color_temp_physical_min` (0x400B) | 2500 (Kelvin) | 400 (mireds) → HA shows 2500K |
-| `color_temp_physical_max` (0x400C) | 5500 (Kelvin) | 182 (mireds) → HA shows 5500K |
+| `color_temp_physical_max` (0x400C) | 6500 (Kelvin) | 153 (mireds) → HA shows 6535K |
 
 ---
 

@@ -5,7 +5,7 @@ Device info:
   - Manufacturer: _TZ3000_yeygk4hw
   - Chip:         Silicon Labs EFR32MG24
   - IEEE:         40:30:59:ff:fe:55:96:96
-  - Type:         CCT dimmable light (2500-5500K)
+  - Type:         CCT dimmable light (2500-6500K)
 
 This is a standard ZCL color-temperature light (device_type 0x0102).
 Single endpoint (EP1) with OnOff, LevelControl, and Color clusters.
@@ -14,7 +14,7 @@ Problem: The device reports color temperature attributes in **Kelvin**
 instead of the ZCL-standard **mireds** (1,000,000 / K):
   - 0x0007 (color_temperature) = Kelvin (e.g. 5499 instead of ~182 mireds)
   - 0x400B (color_temp_physical_min) = 2500 (Kelvin, should be 400 mireds)
-  - 0x400C (color_temp_physical_max) = 5500 (Kelvin, should be 182 mireds)
+  - 0x400C (color_temp_physical_max) = 6500 (Kelvin, should be 153 mireds)
   - 0x4010 (start_up_color_temperature) = Kelvin
 
 It also incorrectly reports color_capabilities, causing HA to expose
@@ -42,10 +42,10 @@ MIREDS_FACTOR = 1_000_000
 
 # Device's physical range (Kelvin, from 0x400B / 0x400C)
 DEVICE_MIN_KELVIN = 2500  # warm white
-DEVICE_MAX_KELVIN = 5500  # cool white
+DEVICE_MAX_KELVIN = 6500  # cool white
 
 # Converted to mireds (note: min K → max mireds, max K → min mireds)
-PHYSICAL_MIN_MIREDS = MIREDS_FACTOR // DEVICE_MAX_KELVIN  # 182
+PHYSICAL_MIN_MIREDS = MIREDS_FACTOR // DEVICE_MAX_KELVIN  # 153
 PHYSICAL_MAX_MIREDS = MIREDS_FACTOR // DEVICE_MIN_KELVIN  # 400
 
 # Color cluster attribute IDs
@@ -95,7 +95,7 @@ class TuyaCCTColorCluster(CustomCluster, Color):
     # Force correct constant attributes
     _CONSTANT_ATTRIBUTES = {
         COLOR_CAPABILITIES: 0x10,  # CCT only (bit 4)
-        COLOR_TEMP_MIN: PHYSICAL_MIN_MIREDS,  # 182 mireds (5500K)
+        COLOR_TEMP_MIN: PHYSICAL_MIN_MIREDS,  # 153 mireds (6500K)
         COLOR_TEMP_MAX: PHYSICAL_MAX_MIREDS,  # 400 mireds (2500K)
     }
 
@@ -162,7 +162,7 @@ class TuyaCCTColorCluster(CustomCluster, Color):
             val = super().get(key)
             if val is not None and isinstance(val, int) and val > 1000:
                 # Value is still in Kelvin (> 1000 means it hasn't been
-                # converted yet — mireds for this device are 182-400)
+                # converted yet — mireds for this device are 153-400)
                 return _kelvin_to_mireds(val)
             return val if val is not None else default
         return super().get(key, default)

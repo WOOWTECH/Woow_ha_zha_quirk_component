@@ -29,6 +29,12 @@
 </p>
 
 <p align="center">
+  <a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=WOOWTECH&repository=Woow_ha_zha_quirk_component&category=integration">
+    <img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open your Home Assistant instance and open a repository inside the Home Assistant Community Store." />
+  </a>
+</p>
+
+<p align="center">
   <a href="README_zh-TW.md">繁體中文</a>
 </p>
 
@@ -258,7 +264,15 @@ graph TB
 
 ## Installation
 
-### HACS (Recommended)
+### Quick Install (One-Click)
+
+Click the button below to add this repository directly to HACS:
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=WOOWTECH&repository=Woow_ha_zha_quirk_component&category=integration)
+
+After adding, search for **WOOW ZHA Quirks** in HACS and click **Install**, then add `woow_zha_quirks:` to `configuration.yaml` and restart.
+
+### HACS (Manual Steps)
 
 1. Open **HACS** in your Home Assistant
 2. Click the top-right menu &rarr; **Custom repositories**

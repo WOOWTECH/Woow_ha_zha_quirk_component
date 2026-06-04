@@ -5,7 +5,6 @@ Device info:
   - Manufacturer: _TZ2000_qc1ntn3c
   - Chip:         Silicon Labs EFR32MG24
   - Firmware:     0x00000087
-  - Zigbee IEEE:  7C:C6:B6:FF:FE:82:6C:CF
 
 This is a standard ZCL dimmer (NOT Tuya MCU / TS0601).
 The device exposes 4 endpoints (device_type=DIMMABLE_LIGHT 0x0101),
@@ -16,31 +15,25 @@ Each real endpoint has:
   - OnOff        (0x0006)  on/off control
   - LevelControl (0x0008)  brightness (0-254)
 
-Tuya features from app:
-  - Dual-gang dimming (Switch1 + Switch2)
-  - All On / All Off
-  - Min/max brightness limits per gang (30-100% in Tuya app)
-  - Indicator LED mode (Off / Switch Status / Switch Position)
+The device does NOT support Tuya manufacturer-specific LevelControl
+attributes (0xFC00-0xFC05). Min/max brightness in the Tuya app is
+a software-only feature of the Tuya gateway/cloud.
 
 Quirk adds:
   1. Remove phantom endpoints 3 & 4
   2. TuyaZBOnOffAttributeCluster on EP1 & EP2 for backlight_mode
   3. AllOnOff virtual cluster on EP200 for all-on/all-off
-  4. Min/max brightness attributes (0xFC03/0xFC04) on LevelControl
+  4. Suppress useless default LevelControl entities
 """
 
 import logging
-from typing import Final
 
-import zigpy.types as t
 from zigpy.quirks.v2 import EntityType, QuirkBuilder
 from zigpy.zcl import foundation
 from zigpy.zcl.clusters.general import LevelControl, OnOff
-from zigpy.zcl.foundation import ZCLAttributeDef
 
 from zhaquirks import LocalDataCluster
 from zhaquirks.tuya import (
-    NoManufacturerCluster,
     SwitchBackLight,
     TuyaZBOnOffAttributeCluster,
 )
@@ -48,44 +41,8 @@ from zhaquirks.tuya import (
 _LOGGER = logging.getLogger(__name__)
 
 ONOFF = TuyaZBOnOffAttributeCluster.cluster_id  # 0x0006
+LEVEL = LevelControl.cluster_id  # 0x0008
 ALL_ONOFF_EP = 200  # virtual endpoint for All On/Off
-
-# Tuya manufacturer-specific LevelControl attributes
-TUYA_MIN_LEVEL_ATTR = 0xFC03
-TUYA_MAX_LEVEL_ATTR = 0xFC04
-TUYA_BULB_TYPE_ATTR = 0xFC02
-
-
-class TuyaBulbType(t.enum8):
-    """Tuya bulb type / dimming curve."""
-
-    LED = 0x00
-    Incandescent = 0x01
-    Halogen = 0x02
-
-
-class SimonLevelControlCluster(NoManufacturerCluster, LevelControl):
-    """LevelControl with Tuya manufacturer-specific min/max brightness.
-
-    Extends LevelControl to add attributes 0xFC03 (min_level) and
-    0xFC04 (max_level) which control the dimming range.
-    Values are in the 10-1000 range (Tuya scale).
-
-    Also adds 0xFC02 (bulb_type) for dimming curve selection.
-    """
-
-    class AttributeDefs(LevelControl.AttributeDefs):
-        """Extended attributes with Tuya min/max brightness."""
-
-        bulb_type: Final = ZCLAttributeDef(
-            id=TUYA_BULB_TYPE_ATTR, type=TuyaBulbType
-        )
-        manufacturer_min_level: Final = ZCLAttributeDef(
-            id=TUYA_MIN_LEVEL_ATTR, type=t.uint16_t
-        )
-        manufacturer_max_level: Final = ZCLAttributeDef(
-            id=TUYA_MAX_LEVEL_ATTR, type=t.uint16_t
-        )
 
 
 class AllOnOffCluster(LocalDataCluster, OnOff):
@@ -145,13 +102,45 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
     QuirkBuilder("_TZ2000_qc1ntn3c", "SM0502")
     # ── EP1: Gang 1 dimmer ──
     .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=1)
-    .replaces(SimonLevelControlCluster, endpoint_id=1)
     # ── EP2: Gang 2 dimmer ──
     .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=2)
-    .replaces(SimonLevelControlCluster, endpoint_id=2)
     # ── Remove phantom endpoints 3 & 4 ──
     .removes_endpoint(endpoint_id=3)
     .removes_endpoint(endpoint_id=4)
+    # ── Suppress useless default LevelControl entities (EP1) ──
+    .prevent_default_entity_creation(
+        endpoint_id=1, cluster_id=LEVEL,
+        unique_id_suffix="on_off_transition_time",
+    )
+    .prevent_default_entity_creation(
+        endpoint_id=1, cluster_id=LEVEL,
+        unique_id_suffix="on_level",
+    )
+    .prevent_default_entity_creation(
+        endpoint_id=1, cluster_id=LEVEL,
+        unique_id_suffix="default_move_rate",
+    )
+    .prevent_default_entity_creation(
+        endpoint_id=1, cluster_id=LEVEL,
+        unique_id_suffix="start_up_current_level",
+    )
+    # ── Suppress useless default LevelControl entities (EP2) ──
+    .prevent_default_entity_creation(
+        endpoint_id=2, cluster_id=LEVEL,
+        unique_id_suffix="on_off_transition_time",
+    )
+    .prevent_default_entity_creation(
+        endpoint_id=2, cluster_id=LEVEL,
+        unique_id_suffix="on_level",
+    )
+    .prevent_default_entity_creation(
+        endpoint_id=2, cluster_id=LEVEL,
+        unique_id_suffix="default_move_rate",
+    )
+    .prevent_default_entity_creation(
+        endpoint_id=2, cluster_id=LEVEL,
+        unique_id_suffix="start_up_current_level",
+    )
     # ── Indicator LED mode (config entity on EP1) ──
     .enum(
         TuyaZBOnOffAttributeCluster.AttributeDefs.backlight_mode.name,
@@ -161,70 +150,6 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
         entity_type=EntityType.CONFIG,
         translation_key="backlight_mode",
         fallback_name="Indicator Mode",
-    )
-    # ── Min/Max brightness for Gang 1 ──
-    .number(
-        SimonLevelControlCluster.AttributeDefs.manufacturer_min_level.name,
-        LevelControl.cluster_id,
-        endpoint_id=1,
-        min_value=10,
-        max_value=1000,
-        step=10,
-        entity_type=EntityType.CONFIG,
-        translation_key="min_brightness",
-        fallback_name="Minimum Brightness",
-    )
-    .number(
-        SimonLevelControlCluster.AttributeDefs.manufacturer_max_level.name,
-        LevelControl.cluster_id,
-        endpoint_id=1,
-        min_value=10,
-        max_value=1000,
-        step=10,
-        entity_type=EntityType.CONFIG,
-        translation_key="max_brightness",
-        fallback_name="Maximum Brightness",
-    )
-    .number(
-        SimonLevelControlCluster.AttributeDefs.manufacturer_min_level.name,
-        LevelControl.cluster_id,
-        endpoint_id=2,
-        min_value=10,
-        max_value=1000,
-        step=10,
-        entity_type=EntityType.CONFIG,
-        translation_key="min_brightness",
-        fallback_name="Minimum Brightness",
-    )
-    .number(
-        SimonLevelControlCluster.AttributeDefs.manufacturer_max_level.name,
-        LevelControl.cluster_id,
-        endpoint_id=2,
-        min_value=10,
-        max_value=1000,
-        step=10,
-        entity_type=EntityType.CONFIG,
-        translation_key="max_brightness",
-        fallback_name="Maximum Brightness",
-    )
-    # ── Bulb type / dimming curve for each gang ──
-    .enum(
-        SimonLevelControlCluster.AttributeDefs.bulb_type.name,
-        TuyaBulbType,
-        LevelControl.cluster_id,
-        endpoint_id=1,
-        entity_type=EntityType.CONFIG,
-        translation_key="bulb_type",
-        fallback_name="Light Source Type",
-    )
-    .enum(
-        SimonLevelControlCluster.AttributeDefs.bulb_type.name,
-        TuyaBulbType,
-        LevelControl.cluster_id,
-        endpoint_id=2,
-        entity_type=EntityType.CONFIG,
-        translation_key="bulb_type",
-        fallback_name="Light Source Type",
     )
     # ── AllOnOff virtual endpoint ──
     .adds_endpoint(endpoint_id=ALL_ONOFF_EP)

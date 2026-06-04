@@ -5,6 +5,7 @@ Device info:
   - Manufacturer: _TZ2000_qc1ntn3c
   - Chip:         Silicon Labs EFR32MG24
   - Firmware:     0x00000087
+  - IEEE:         7c:c6:b6:ff:fe:82:6c:cf
 
 This is a standard ZCL dimmer (NOT Tuya MCU / TS0601).
 The device exposes 4 endpoints (device_type=DIMMABLE_LIGHT 0x0101),
@@ -15,25 +16,38 @@ Each real endpoint has:
   - OnOff        (0x0006)  on/off control
   - LevelControl (0x0008)  brightness (0-254)
 
-The device does NOT support Tuya manufacturer-specific LevelControl
-attributes (0xFC00-0xFC05). Min/max brightness in the Tuya app is
-a software-only feature of the Tuya gateway/cloud.
+Tuya manufacturer-specific LevelControl attributes:
+  - 0xFC00 (uint16) — packed min/max brightness
+      high byte = min brightness (0x00-0xFF)
+      low byte  = max brightness (0x00-0xFF)
+      default 0x01FF → min=1, max=255
+  - 0xFC01 (uint8)  — dimming mode / curve type
+
+Virtual attributes (split from 0xFC00 for user-friendly control):
+  - 0xFC10 — min brightness (0-255), stored in high byte of 0xFC00
+  - 0xFC11 — max brightness (0-255), stored in low byte of 0xFC00
 
 Quirk adds:
   1. Remove phantom endpoints 3 & 4
   2. TuyaZBOnOffAttributeCluster on EP1 & EP2 for backlight_mode
   3. AllOnOff virtual cluster on EP200 for all-on/all-off
   4. Suppress useless default LevelControl entities
+  5. Separate min / max brightness controls via 0xFC00 byte splitting
+  6. Dimming mode enum via 0xFC01
 """
 
 import logging
+from typing import Final
 
+import zigpy.types as t
 from zigpy.quirks.v2 import EntityType, QuirkBuilder
 from zigpy.zcl import foundation
 from zigpy.zcl.clusters.general import LevelControl, OnOff
+from zigpy.zcl.foundation import ZCLAttributeDef
 
 from zhaquirks import LocalDataCluster
 from zhaquirks.tuya import (
+    NoManufacturerCluster,
     SwitchBackLight,
     TuyaZBOnOffAttributeCluster,
 )
@@ -43,6 +57,121 @@ _LOGGER = logging.getLogger(__name__)
 ONOFF = TuyaZBOnOffAttributeCluster.cluster_id  # 0x0006
 LEVEL = LevelControl.cluster_id  # 0x0008
 ALL_ONOFF_EP = 200  # virtual endpoint for All On/Off
+
+# Tuya private LevelControl attribute IDs
+TUYA_LEVEL_MIN_MAX = 0xFC00  # packed: high=min, low=max
+TUYA_DIMMING_MODE = 0xFC01
+
+# Virtual attribute IDs for split min/max (not real ZCL attrs)
+VIRTUAL_MIN_BRIGHTNESS = 0xFC10
+VIRTUAL_MAX_BRIGHTNESS = 0xFC11
+
+
+class TuyaDimmingMode(t.enum8):
+    """Tuya dimming mode / curve type."""
+
+    Mode_0 = 0x00
+    Mode_1 = 0x01
+    Mode_2 = 0x02
+    Mode_3 = 0x03
+    Mode_4 = 0x04
+    Mode_5 = 0x05
+    Mode_6 = 0x06
+    Mode_7 = 0x07
+
+
+class SimonLevelControlCluster(NoManufacturerCluster, LevelControl):
+    """LevelControl with split min/max brightness from packed 0xFC00.
+
+    The device stores min and max brightness in a single uint16 (0xFC00):
+        high byte = min brightness (0-255)
+        low byte  = max brightness (0-255)
+    Example: 0x4DFF → min=77(~30%), max=255(100%)
+
+    This cluster exposes two virtual attributes (0xFC10, 0xFC11) as
+    separate number entities. Writes to either virtual attribute
+    read-modify-write the underlying 0xFC00.
+    """
+
+    class AttributeDefs(LevelControl.AttributeDefs):
+        """Extended attributes with Tuya min/max and virtual split."""
+
+        tuya_min_max_brightness: Final = ZCLAttributeDef(
+            id=TUYA_LEVEL_MIN_MAX, type=t.uint16_t
+        )
+        tuya_dimming_mode: Final = ZCLAttributeDef(
+            id=TUYA_DIMMING_MODE, type=TuyaDimmingMode
+        )
+        min_brightness: Final = ZCLAttributeDef(
+            id=VIRTUAL_MIN_BRIGHTNESS, type=t.uint8_t
+        )
+        max_brightness: Final = ZCLAttributeDef(
+            id=VIRTUAL_MAX_BRIGHTNESS, type=t.uint8_t
+        )
+
+    def get(self, key, default=None):
+        """Override get to compute virtual attrs from cached 0xFC00."""
+        if key in (VIRTUAL_MIN_BRIGHTNESS, VIRTUAL_MAX_BRIGHTNESS):
+            val = super().get(key)
+            if val is None:
+                packed = super().get(TUYA_LEVEL_MIN_MAX)
+                if packed is not None and isinstance(packed, int):
+                    super()._update_attribute(
+                        VIRTUAL_MIN_BRIGHTNESS, (packed >> 8) & 0xFF
+                    )
+                    super()._update_attribute(
+                        VIRTUAL_MAX_BRIGHTNESS, packed & 0xFF
+                    )
+                    return super().get(key, default)
+            return val if val is not None else default
+        return super().get(key, default)
+
+    async def write_attributes(self, attributes, manufacturer=None, **kwargs):
+        """Intercept writes to virtual min/max and redirect to 0xFC00."""
+        real_attrs = {}
+        min_write = None
+        max_write = None
+
+        for attr, value in attributes.items():
+            attr_id = attr if isinstance(attr, int) else getattr(
+                self.AttributeDefs, attr, None
+            )
+            if attr_id is not None and not isinstance(attr_id, int):
+                attr_id = attr_id.id
+
+            if attr_id == VIRTUAL_MIN_BRIGHTNESS:
+                min_write = int(value) & 0xFF
+            elif attr_id == VIRTUAL_MAX_BRIGHTNESS:
+                max_write = int(value) & 0xFF
+            else:
+                real_attrs[attr] = value
+
+        if min_write is not None or max_write is not None:
+            current = self.get(TUYA_LEVEL_MIN_MAX, 0x01FF)
+            cur_min = (current >> 8) & 0xFF
+            cur_max = current & 0xFF
+            new_min = min_write if min_write is not None else cur_min
+            new_max = max_write if max_write is not None else cur_max
+            packed = (new_min << 8) | new_max
+            real_attrs[self.AttributeDefs.tuya_min_max_brightness.name] = packed
+
+        if real_attrs:
+            return await super().write_attributes(real_attrs, manufacturer, **kwargs)
+        return [[], []]
+
+    def _update_attribute(self, attrid, value):
+        """When 0xFC00 is updated, split into virtual min/max attributes."""
+        super()._update_attribute(attrid, value)
+
+        if attrid == TUYA_LEVEL_MIN_MAX and isinstance(value, int):
+            min_val = (value >> 8) & 0xFF
+            max_val = value & 0xFF
+            _LOGGER.debug(
+                "SM0502 EP%d 0xFC00=0x%04X → min=%d, max=%d",
+                self.endpoint.endpoint_id, value, min_val, max_val,
+            )
+            super()._update_attribute(VIRTUAL_MIN_BRIGHTNESS, min_val)
+            super()._update_attribute(VIRTUAL_MAX_BRIGHTNESS, max_val)
 
 
 class AllOnOffCluster(LocalDataCluster, OnOff):
@@ -102,8 +231,10 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
     QuirkBuilder("_TZ2000_qc1ntn3c", "SM0502")
     # ── EP1: Gang 1 dimmer ──
     .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=1)
+    .replaces(SimonLevelControlCluster, endpoint_id=1)
     # ── EP2: Gang 2 dimmer ──
     .replaces(TuyaZBOnOffAttributeCluster, endpoint_id=2)
+    .replaces(SimonLevelControlCluster, endpoint_id=2)
     # ── Remove phantom endpoints 3 & 4 ──
     .removes_endpoint(endpoint_id=3)
     .removes_endpoint(endpoint_id=4)
@@ -141,6 +272,15 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
         endpoint_id=2, cluster_id=LEVEL,
         unique_id_suffix="start_up_current_level",
     )
+    # ── Suppress raw 0xFC00 auto-entity (we use virtual split instead) ──
+    .prevent_default_entity_creation(
+        endpoint_id=1, cluster_id=LEVEL,
+        unique_id_suffix="tuya_min_max_brightness",
+    )
+    .prevent_default_entity_creation(
+        endpoint_id=2, cluster_id=LEVEL,
+        unique_id_suffix="tuya_min_max_brightness",
+    )
     # ── Indicator LED mode (config entity on EP1) ──
     .enum(
         TuyaZBOnOffAttributeCluster.AttributeDefs.backlight_mode.name,
@@ -150,6 +290,72 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
         entity_type=EntityType.CONFIG,
         translation_key="backlight_mode",
         fallback_name="Indicator Mode",
+    )
+    # ── Min brightness per gang (virtual 0xFC10 → high byte of 0xFC00) ──
+    .number(
+        SimonLevelControlCluster.AttributeDefs.min_brightness.name,
+        LEVEL,
+        endpoint_id=1,
+        min_value=0,
+        max_value=255,
+        step=1,
+        entity_type=EntityType.CONFIG,
+        translation_key="min_brightness",
+        fallback_name="Min Brightness",
+    )
+    .number(
+        SimonLevelControlCluster.AttributeDefs.min_brightness.name,
+        LEVEL,
+        endpoint_id=2,
+        min_value=0,
+        max_value=255,
+        step=1,
+        entity_type=EntityType.CONFIG,
+        translation_key="min_brightness",
+        fallback_name="Min Brightness",
+    )
+    # ── Max brightness per gang (virtual 0xFC11 → low byte of 0xFC00) ──
+    .number(
+        SimonLevelControlCluster.AttributeDefs.max_brightness.name,
+        LEVEL,
+        endpoint_id=1,
+        min_value=0,
+        max_value=255,
+        step=1,
+        entity_type=EntityType.CONFIG,
+        translation_key="max_brightness",
+        fallback_name="Max Brightness",
+    )
+    .number(
+        SimonLevelControlCluster.AttributeDefs.max_brightness.name,
+        LEVEL,
+        endpoint_id=2,
+        min_value=0,
+        max_value=255,
+        step=1,
+        entity_type=EntityType.CONFIG,
+        translation_key="max_brightness",
+        fallback_name="Max Brightness",
+    )
+    # ── Dimming mode (EP1) ──
+    .enum(
+        SimonLevelControlCluster.AttributeDefs.tuya_dimming_mode.name,
+        TuyaDimmingMode,
+        LEVEL,
+        endpoint_id=1,
+        entity_type=EntityType.CONFIG,
+        translation_key="dimming_mode",
+        fallback_name="Dimming Mode",
+    )
+    # ── Dimming mode (EP2) ──
+    .enum(
+        SimonLevelControlCluster.AttributeDefs.tuya_dimming_mode.name,
+        TuyaDimmingMode,
+        LEVEL,
+        endpoint_id=2,
+        entity_type=EntityType.CONFIG,
+        translation_key="dimming_mode",
+        fallback_name="Dimming Mode",
     )
     # ── AllOnOff virtual endpoint ──
     .adds_endpoint(endpoint_id=ALL_ONOFF_EP)

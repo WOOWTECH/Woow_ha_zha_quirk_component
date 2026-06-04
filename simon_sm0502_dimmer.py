@@ -337,25 +337,14 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
         translation_key="max_brightness",
         fallback_name="Max Brightness",
     )
-    # ── Dimming mode (EP1) ──
-    .enum(
-        SimonLevelControlCluster.AttributeDefs.tuya_dimming_mode.name,
-        TuyaDimmingMode,
-        LEVEL,
-        endpoint_id=1,
-        entity_type=EntityType.CONFIG,
-        translation_key="dimming_mode",
-        fallback_name="Dimming Mode",
+    # ── Suppress dimming mode (0xFC01 is read-only on this device) ──
+    .prevent_default_entity_creation(
+        endpoint_id=1, cluster_id=LEVEL,
+        unique_id_suffix="tuya_dimming_mode",
     )
-    # ── Dimming mode (EP2) ──
-    .enum(
-        SimonLevelControlCluster.AttributeDefs.tuya_dimming_mode.name,
-        TuyaDimmingMode,
-        LEVEL,
-        endpoint_id=2,
-        entity_type=EntityType.CONFIG,
-        translation_key="dimming_mode",
-        fallback_name="Dimming Mode",
+    .prevent_default_entity_creation(
+        endpoint_id=2, cluster_id=LEVEL,
+        unique_id_suffix="tuya_dimming_mode",
     )
     # ── AllOnOff virtual endpoint ──
     .adds_endpoint(endpoint_id=ALL_ONOFF_EP)

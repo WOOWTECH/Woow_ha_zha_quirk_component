@@ -24,8 +24,8 @@
   <img src="https://img.shields.io/badge/Python-3.12+-yellow?logo=python" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/HACS-Compatible-green?logo=homeassistantcommunitystore" alt="HACS Compatible" />
   <img src="https://img.shields.io/badge/License-MIT-red" alt="MIT License" />
-  <img src="https://img.shields.io/badge/Quirks-9%20files-blue" alt="9 Quirk Files" />
-  <img src="https://img.shields.io/badge/Devices-8%20models-brightgreen" alt="8 Device Models" />
+  <img src="https://img.shields.io/badge/Quirks-10%20files-blue" alt="10 Quirk Files" />
+  <img src="https://img.shields.io/badge/Devices-12%20models-brightgreen" alt="12 Device Models" />
 </p>
 
 <p align="center">
@@ -55,6 +55,7 @@
 | 9 | Gledopto GL-SPI-206P | SPI LED Controller | `_TZE284_gt5al3bl` | `light` + `select` | RGBCW color, 16 scene effects, pixel count, chip type config |
 | 10 | Zemismart 4-Gang Screen Switch | 4-Gang Touch Switch | `_TZE204_wwaeqnrf` | `switch` | Screen label write, countdown timer, child lock, LED colors |
 | 11 | Tuya Curtain Track | Curtain Track Motor | `_TZE200_nogaemzt` | `cover` | Motor direction, limit switches, motor mode |
+| 12 | Simon SM0502 | 2-Gang Dimmer Switch | `_TZ2000_qc1ntn3c` | `light` + `number` | Min/max brightness split, All On/Off virtual endpoint, indicator LED |
 
 ---
 
@@ -69,6 +70,29 @@ Standard ZCL switches (genOnOff), NOT Tuya MCU devices.
 | Switch (per gang) | 0x0006 | `on_off` | Standard | On/Off control |
 | Indicator Mode | 0x0006 | `backlight_mode` (0x8001) | Config | Off / Normal / Inverted |
 | All On/Off | 0x0006 (EP 200) | `on_off` | Standard | Virtual endpoint, multi-gang only |
+
+---
+
+### Simon SM0502 (`_TZ2000_qc1ntn3c`)
+
+Standard ZCL 2-gang dimmer (NOT Tuya MCU). Silicon Labs EFR32MG24 chip. Device exposes 4 endpoints but only EP1 & EP2 are real physical gangs; EP3 & EP4 are phantom and removed by the quirk.
+
+| Feature | Cluster | Attribute | EP | Entity Type | Description |
+|---------|---------|-----------|-----|-------------|-------------|
+| Light (per gang) | 0x0006 + 0x0008 | `on_off` + `current_level` | 1, 2 | Standard (light) | Dimmable light, brightness 0-254 |
+| Indicator Mode | 0x0006 | `backlight_mode` (0x8001) | 1 | Config | Off / Normal / Inverted |
+| Min Brightness | 0x0008 | `min_brightness` (virtual 0xFC10) | 1, 2 | Config (number) | Per-gang min brightness (0-255) |
+| Max Brightness | 0x0008 | `max_brightness` (virtual 0xFC11) | 1, 2 | Config (number) | Per-gang max brightness (0-255) |
+| All On/Off | 0x0006 (EP 200) | `on_off` | 200 | Standard | Virtual endpoint, controls both gangs |
+
+**Min/Max Brightness Technical Detail:**
+
+The device stores min and max brightness in a single packed uint16 attribute `0xFC00`:
+- High byte = min brightness (0x00-0xFF)
+- Low byte = max brightness (0x00-0xFF)
+- Example: `0x4DFF` = min 77 (~30%), max 255 (100%)
+
+The quirk splits this into two virtual attributes (`0xFC10` / `0xFC11`) as separate number entities. Writes to either virtual attribute perform read-modify-write on the underlying `0xFC00`.
 
 ---
 
@@ -232,7 +256,7 @@ graph TB
 
     subgraph "WOOW ZHA Quirks"
         INIT["__init__.py<br/>Auto-loader"]
-        QUIRKS["Quirk Modules<br/>(9 files)"]
+        QUIRKS["Quirk Modules<br/>(10 files)"]
     end
 
     subgraph "ZHA + zigpy"
@@ -302,7 +326,7 @@ config/
             ├── __init__.py
             ├── simon_i7_s2100.py
             ├── ts0001_switch_TZ3000_tqlv4ug4.py
-            └── ... (8 more quirk files)
+            └── ... (9 more quirk files)
 ```
 
 3. Add `woow_zha_quirks:` to `configuration.yaml`
@@ -344,6 +368,7 @@ Woow_ha_zha_quirk_component/
 │       └── quirks/
 │           ├── __init__.py
 │           ├── simon_i7_s2100.py                     # Simon i7 1-4 gang switches
+│           ├── simon_sm0502_dimmer.py                 # Simon SM0502 2-gang dimmer
 │           ├── ts0001_switch_TZ3000_tqlv4ug4.py      # TS0001 single switch
 │           ├── ts0002_switch_TZ3000_denobasq.py      # TS0002 dual switch
 │           ├── ts0601_cover_TZE284_qxjkdfyt.py       # Roller shade motor
@@ -402,6 +427,7 @@ from zhaquirks.tuya.builder import TuyaQuirkBuilder
 |-----------|---------|-------------|
 | `woow_zha_quirks` | 1.0.0 | Main quirks package |
 | Simon i7 quirk | v3 | AllOnOff virtual endpoint |
+| Simon SM0502 quirk | v5 | Min/max brightness split + AllOnOff |
 | Ceiling fan quirk | v5 | 6-speed + direction + preset |
 | SPI LED quirk | v9 | Batch queue + correct scene format |
 | Screen switch quirk | v2 | Screen label write support |

@@ -24,8 +24,8 @@
   <img src="https://img.shields.io/badge/Python-3.12+-yellow?logo=python" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/HACS-Compatible-green?logo=homeassistantcommunitystore" alt="HACS Compatible" />
   <img src="https://img.shields.io/badge/License-MIT-red" alt="MIT License" />
-  <img src="https://img.shields.io/badge/Quirks-10%20files-blue" alt="10 Quirk Files" />
-  <img src="https://img.shields.io/badge/Devices-12%20models-brightgreen" alt="12 Device Models" />
+  <img src="https://img.shields.io/badge/Quirks-11%20files-blue" alt="11 Quirk Files" />
+  <img src="https://img.shields.io/badge/Devices-13%20models-brightgreen" alt="13 Device Models" />
 </p>
 
 <p align="center">
@@ -56,6 +56,7 @@
 | 10 | Zemismart 4-Gang Screen Switch | 4-Gang Touch Switch | `_TZE204_wwaeqnrf` | `switch` | Screen label write, countdown timer, child lock, LED colors |
 | 11 | Tuya Curtain Track | Curtain Track Motor | `_TZE200_nogaemzt` | `cover` | Motor direction, limit switches, motor mode |
 | 12 | Simon SM0502 | 2-Gang Dimmer Switch | `_TZ2000_qc1ntn3c` | `light` + `number` | Min/max brightness split, All On/Off virtual endpoint, indicator LED |
+| 13 | Tuya TS0502B | CCT Dimmable Light | `_TZ3000_yeygk4hw` | `light` | Kelvin↔mireds auto-conversion, CCT-only mode fix (2500-5500K) |
 
 ---
 
@@ -93,6 +94,31 @@ The device stores min and max brightness in a single packed uint16 attribute `0x
 - Example: `0x4DFF` = min 77 (~30%), max 255 (100%)
 
 The quirk splits this into two virtual attributes (`0xFC10` / `0xFC11`) as separate number entities. Writes to either virtual attribute perform read-modify-write on the underlying `0xFC00`.
+
+---
+
+### Tuya TS0502B (`_TZ3000_yeygk4hw`)
+
+Standard ZCL CCT dimmable light (NOT Tuya MCU). Silicon Labs EFR32MG24 chip. The device reports color temperature attributes in **Kelvin** instead of ZCL-standard **mireds**; the quirk converts automatically.
+
+| Feature | Cluster | Attribute | Entity Type | Description |
+|---------|---------|-----------|-------------|-------------|
+| Light | 0x0006 + 0x0008 | `on_off` + `current_level` | Standard (light) | Dimmable CCT light, brightness 0-254 |
+| Color Temperature | 0x0300 | `color_temperature` (0x0007) | Standard (light) | 2500-5500K, auto Kelvin↔mireds conversion |
+| Color Capabilities | 0x0300 | `color_capabilities` (0x400A) | — | Forced to 0x10 (CCT only, removes xy mode) |
+
+**Kelvin↔Mireds Conversion:**
+
+The device stores color temperature in Kelvin but ZCL expects mireds (1,000,000 / K). The quirk converts transparently:
+- **Reads**: Kelvin (from device) → mireds (to ZHA/HA)
+- **Writes**: mireds (from HA) → Kelvin (to device)
+- **Commands**: `move_to_color_temperature` command also converted
+
+| Device Attribute | Device Value | Quirk Output |
+|------------------|-------------|--------------|
+| `color_temperature` (0x0007) | 5499 (Kelvin) | 181 (mireds) → HA shows 5524K |
+| `color_temp_physical_min` (0x400B) | 2500 (Kelvin) | 400 (mireds) → HA shows 2500K |
+| `color_temp_physical_max` (0x400C) | 5500 (Kelvin) | 182 (mireds) → HA shows 5500K |
 
 ---
 
@@ -256,7 +282,7 @@ graph TB
 
     subgraph "WOOW ZHA Quirks"
         INIT["__init__.py<br/>Auto-loader"]
-        QUIRKS["Quirk Modules<br/>(10 files)"]
+        QUIRKS["Quirk Modules<br/>(11 files)"]
     end
 
     subgraph "ZHA + zigpy"
@@ -326,7 +352,7 @@ config/
             ├── __init__.py
             ├── simon_i7_s2100.py
             ├── ts0001_switch_TZ3000_tqlv4ug4.py
-            └── ... (9 more quirk files)
+            └── ... (10 more quirk files)
 ```
 
 3. Add `woow_zha_quirks:` to `configuration.yaml`
@@ -370,6 +396,7 @@ Woow_ha_zha_quirk_component/
 │           ├── simon_i7_s2100.py                     # Simon i7 1-4 gang switches
 │           ├── simon_sm0502_dimmer.py                 # Simon SM0502 2-gang dimmer
 │           ├── ts0001_switch_TZ3000_tqlv4ug4.py      # TS0001 single switch
+│           ├── ts0502b_cct_TZ3000_yeygk4hw.py         # TS0502B CCT dimmable light
 │           ├── ts0002_switch_TZ3000_denobasq.py      # TS0002 dual switch
 │           ├── ts0601_cover_TZE284_qxjkdfyt.py       # Roller shade motor
 │           ├── ts0601_fan_TZE200_hmgktzj2.py         # Ceiling fan + light
@@ -428,6 +455,7 @@ from zhaquirks.tuya.builder import TuyaQuirkBuilder
 | `woow_zha_quirks` | 1.0.0 | Main quirks package |
 | Simon i7 quirk | v3 | AllOnOff virtual endpoint |
 | Simon SM0502 quirk | v5 | Min/max brightness split + AllOnOff |
+| TS0502B CCT quirk | v1 | Kelvin↔mireds conversion + CCT-only fix |
 | Ceiling fan quirk | v5 | 6-speed + direction + preset |
 | SPI LED quirk | v9 | Batch queue + correct scene format |
 | Screen switch quirk | v2 | Screen label write support |

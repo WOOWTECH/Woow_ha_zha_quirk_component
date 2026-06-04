@@ -562,11 +562,392 @@ Quirk 內部命名：
 
 ---
 
+## 九、深度技術分析（已驗證的開發模式）
+
+> 以下內容來自對容器上已運作 quirks 的逐行分析，
+> 以及 ZHA/zhaquirks 源碼的實際驗證。
+
+### 9.1 ZHA 平台實體發現機制
+
+ZHA 透過兩層條件決定為每個端點建立什麼 HA 實體：
+
+**第一層：`device_type`（端點設備類型）**
+
+```
+Profile 260 (ZHA):
+  Light 平台接受:
+    ON_OFF_LIGHT (0x0100)        → 簡單開關燈
+    DIMMABLE_LIGHT (0x0101)      → 可調光燈
+    COLOR_DIMMABLE_LIGHT (0x0102)→ 彩色可調光燈
+    COLOR_TEMPERATURE_LIGHT (0x010C) → 色溫燈
+    EXTENDED_COLOR_LIGHT (0x010D)→ 擴展彩色燈 (RGBCW)
+    DIMMABLE_BALLAST (0x0109)    → 可調光鎮流器
+    DIMMABLE_PLUG_IN_UNIT (0x010B)
+
+  Cover 平台: 不依賴 device_type，僅匹配 WindowCovering cluster (0x0102)
+  Climate 平台: 不依賴 device_type，僅匹配 Thermostat cluster (0x0201)
+  Fan 平台: 不依賴 device_type，僅匹配 Fan cluster (0x0202)
+```
+
+**第二層：`cluster_handler_match`（cluster 組合匹配）**
+
+| 平台 | 必要 cluster | 可選 cluster | device_type 限制 |
+|------|-------------|-------------|-----------------|
+| Light | OnOff (0x0006) | Color, LevelControl | 必須在 LIGHT_PROFILE_DEVICE_TYPES 中 |
+| Switch | OnOff (0x0006) | — | 排除 Light 類型的 device_type |
+| Cover | WindowCovering (0x0102) | — | 無限制 |
+| Climate | Thermostat (0x0201) | Fan (0x0202) | 無限制 |
+| Fan | Fan (0x0202) | — | 無限制 |
+
+**關鍵結論**：
+- 建立 **Light** 實體：端點必須有 `OnOff` cluster + `device_type` 是 Light 類型之一
+- 建立 **Cover** 實體：端點只需有 `WindowCovering` cluster
+- 建立 **Climate** 實體：端點只需有 `Thermostat` cluster
+- 建立 **Fan** 實體：端點只需有 `Fan` cluster
+- Light 和 Switch 互斥：同一端點的 OnOff cluster 只會產生一種實體
+
+### 9.2 DP 數據流完整路徑
+
+#### 入站（設備 → HA）
+
+```
+物理設備 MCU
+  ↓  Zigbee 幀 (Tuya cluster 0xEF00 report)
+zigpy 接收原始幀
+  ↓  分派到 TuyaMCUCluster (或自訂子類)
+TuyaMCUCluster.handle_get_data(command: TuyaCommand)
+  ↓  遍歷 command.datapoints
+  ↓  查詢 self.data_point_handlers[record.dp]
+  ↓  呼叫 self._dp_2_attr_update(record) 或自訂處理器
+_dp_2_attr_update(datapoint)
+  ↓  查詢 self._dp_to_attributes[dp] → DPToAttributeMapping 列表
+  ↓  對每個映射：找到目標 cluster + 屬性
+  ↓  呼叫 converter(value) 做值轉換
+  ↓  cluster.update_attribute(attr_name, value)
+ZCL cluster._update_attribute(attr_id, value)
+  ↓  ZHA ClusterHandler 偵測到屬性變化
+ZHA Entity 狀態更新
+  ↓
+HA 前端 UI 更新
+```
+
+#### 出站（HA → 設備）
+
+**路徑 A：builder 管理的 DP（tuya_switch/tuya_enum/tuya_number 等）**
+```
+HA 前端操作
+  ↓
+ZHA Entity → TuyaMCUCluster.write_attributes({attr: value})
+  ↓  建立 TuyaClusterData(attr_value=int)
+  ↓  觸發 command_bus TUYA_MCU_COMMAND 事件
+  ↓  from_cluster_data() → 查詢 dp_mapping → 建立 TuyaCommand
+  ↓  self.command(0x00, tuya_cmd)
+  ↓  Zigbee 幀發送到設備
+```
+
+**路徑 B：自訂 cluster 的 command()（用於 Light/Climate/Fan）**
+```
+HA 前端操作（如 light.turn_on）
+  ↓
+ZHA Light Entity → ZCL command (如 move_to_level)
+  ↓
+自訂 cluster.command(cmd_id, *args)
+  ↓  攔截命令，轉換為 Tuya DP
+  ↓  mcu = self.endpoint.tuya_manufacturer（或跨端點取得）
+  ↓  mcu.send_dp(TuyaDatapointData(...))  或  mcu.write_attributes(...)
+  ↓  _update_attribute() 立即更新本地狀態（UI即時回饋）
+  ↓  返回 Default_Response(SUCCESS)
+```
+
+**⚠️ 關鍵差異**：
+- 路徑 A 經過 `TuyaClusterData`（`attr_value: int`），只能傳整數
+- 路徑 B 直接建構 `TuyaDatapointData`，可傳任何類型（字串、raw bytes 等）
+- 已驗證的繞過方式：`ScreenLabelTuyaMCUCluster` 覆寫 `write_attributes` 直接建構 `TuyaCommand`
+
+### 9.3 TuyaQuirkBuilder 完整方法清單（57 個方法）
+
+#### Tuya 專用 DP 映射方法（20 個）
+```python
+# 基礎設備控制
+tuya_switch(dp_id, attribute_name="on_off", ...)     → Switch 實體
+tuya_onoff(dp_id, onoff_cfg=TuyaOnOffNM, ...)        → OnOff cluster
+tuya_cover(control_dp, position_state_dp, position_control_dp, invert=True) → Cover 實體
+tuya_enum(dp_id, attribute_name, enum_class, ...)     → Select 實體
+tuya_number(dp_id, type, attribute_name, min/max/step/unit, ...) → Number 實體
+tuya_binary_sensor(dp_id, attribute_name, ...)        → Binary Sensor 實體
+tuya_sensor(dp_id, attribute_name, type, converter, ...) → Sensor 實體
+
+# 環境感測
+tuya_temperature(dp_id, scale=100, ...)               → 溫度感測器
+tuya_humidity(dp_id, scale=100, ...)                  → 濕度感測器
+tuya_co2(dp_id, scale=1e-06, ...)                     → CO2 濃度
+tuya_pm25(dp_id, scale=1, ...)                        → PM2.5
+tuya_voc(dp_id, scale=1e-06, ...)                     → VOC
+tuya_formaldehyde(dp_id, converter=lambda, ...)       → 甲醛
+tuya_illuminance(dp_id, converter=lambda, ...)        → 光照
+tuya_soil_moisture(dp_id, scale=100, ...)             → 土壤濕度
+tuya_electrical_conductivity(dp_id, scale=1, ...)     → 電導率
+
+# 安全/二元感測
+tuya_ias(dp_id, ias_cfg, converter, ...)              → IAS Zone
+tuya_contact(dp_id, ...)                              → 門窗感測器
+tuya_gas(dp_id, ...)                                  → 瓦斯偵測
+tuya_smoke(dp_id, ...)                                → 煙霧偵測
+tuya_vibration(dp_id, ...)                            → 振動偵測
+
+# 電源
+tuya_battery(dp_id, power_cfg, battery_type, ...)     → 電池電量
+tuya_metering(dp_id, metering_cfg, scale, ...)        → 計量
+
+# 底層 DP 映射
+tuya_dp(dp_id, ep_attribute, attribute_name, converter, dp_converter) → 底層映射
+tuya_dp_attribute(dp_id, attribute_name, type, ...)   → 純屬性（無實體）
+tuya_dp_multi(dp_id, attribute_mapping, ...)          → 多屬性映射
+tuya_attribute(dp_id, attribute_name, type, access)   → 添加屬性定義
+```
+
+#### 通用 QuirkBuilder 方法（37 個）
+```python
+# 端點管理
+adds_endpoint(endpoint_id, profile_id=260, device_type=255)
+removes_endpoint(endpoint_id)
+replaces_endpoint(endpoint_id, profile_id=260, device_type=255)
+
+# Cluster 管理
+adds(cluster, cluster_type=Server, endpoint_id=1, constant_attributes=None)
+removes(cluster_id, cluster_type=Server, endpoint_id=1)
+replaces(replacement_cluster, cluster_id=None, cluster_type=Server, endpoint_id=1)
+replace_cluster_occurrences(replacement_cluster, server=True, client=True)
+
+# 實體自訂
+enum(attribute_name, enum_class, cluster_id, ...)
+number(attribute_name, cluster_id, min/max/step, ...)
+sensor(attribute_name, cluster_id, divisor, multiplier, ...)
+binary_sensor(attribute_name, cluster_id, ...)
+switch(attribute_name, cluster_id, ...)
+command_button(command_name, cluster_id, ...)
+write_attr_button(attribute_name, attribute_value, cluster_id, ...)
+
+# 實體修改
+change_entity_metadata(endpoint_id, cluster_id, ...)
+prevent_default_entity_creation(endpoint_id, cluster_id, ...)
+
+# 設備觸發
+device_automation_triggers(triggers_dict)
+
+# 註冊
+add_to_registry(replacement_cluster=TuyaMCUCluster, force_add_cluster=False,
+                mcu_write_command=0)
+also_applies_to(manufacturer, model)
+applies_to(manufacturer, model)
+
+# 配置
+skip_configuration(skip=True)
+tuya_enchantment(read_attr_spell=True, data_query_spell=False)
+friendly_name(model, manufacturer)
+device_class(custom_device_class)
+device_alert(level, message)
+filter(filter_function)
+firmware_version_filter(min_version, max_version, allow_missing)
+node_descriptor(node_descriptor)
+clone(omit_man_model_data=True)
+exposes_feature(feature, config)
+```
+
+### 9.4 已驗證的開發模式清單
+
+基於容器上 9 個 quirk 的分析，歸納出 6 種經過驗證的開發模式：
+
+#### 模式 1：純 Builder 聲明式（最簡單）
+**適用**：只需要 switch/select/number/sensor/binary_sensor 的設備
+```python
+TuyaQuirkBuilder(mfr, "TS0601")
+    .tuya_switch(dp_id=1, ...)
+    .tuya_enum(dp_id=4, ...)
+    .skip_configuration()
+    .add_to_registry()
+```
+**範例**：簡單開關（ts0001_switch_TZ3000_tqlv4ug4.py）
+
+#### 模式 2：Builder + tuya_cover()
+**適用**：窗簾設備（3-DP 標準模式）
+```python
+TuyaQuirkBuilder(mfr, "TS0601")
+    .tuya_cover(control_dp=1, position_state_dp=3, position_control_dp=2, invert=True)
+    .skip_configuration()
+    .add_to_registry()
+```
+**範例**：ts0601_cover_TZE284_qxjkdfyt.py
+
+#### 模式 3：Builder + tuya_dp() + .adds(custom_cluster)
+**適用**：窗簾（非標準 DP）、特殊感測器
+```python
+TuyaQuirkBuilder(mfr, "TS0601")
+    .tuya_dp(dp_id=1, ep_attribute="window_covering", attribute_name="tuya_cover_command")
+    .tuya_dp(dp_id=2, ..., converter=lambda x: 100-x, dp_converter=lambda x: 100-x)
+    .adds(TuyaWindowCovering)
+    .replaces_endpoint(1, device_type=WINDOW_COVERING_DEVICE)
+    .add_to_registry()
+```
+**範例**：tuya_cover_nogaemzt.py
+
+#### 模式 4：自訂 ZCL cluster + Builder + replacement_cluster
+**適用**：Light、Fan、需要攔截 ZCL 命令的複雜設備
+
+**核心架構**：
+```python
+class MyOnOff(OnOff, TuyaLocalCluster):       # 攔截 on/off
+class MyOnOffNM(NoManufacturerCluster, MyOnOff): # 加入 NM mixin
+class MyMCU(TuyaMCUCluster):                  # 自訂入站 DP 路由
+    def handle_get_data(self, command):
+        for record in command.datapoints:
+            if record.dp in CUSTOM_DPS:
+                self._dp_2_attr_update(record)  # 自訂路由
+            else:
+                # builder 管理的 DP 走 super()
+    def _dp_2_attr_update(self, datapoint):
+        # 跨端點更新屬性
+
+TuyaQuirkBuilder(mfr, "TS0601")
+    .adds(MyOnOffNM)
+    .adds_endpoint(2, device_type=ON_OFF_LIGHT)
+    .adds(MyLightNM, endpoint_id=2)
+    .tuya_enum(dp_id=102, ...)  # builder 管理的簡單 DP
+    .skip_configuration()
+    .add_to_registry(replacement_cluster=MyMCU)
+```
+**範例**：
+- ts0601_fan_TZE200_hmgktzj2.py（風扇+燈光+色溫）
+- ts0601_light_TZE284_gt5al3bl.py（RGBCW LED 控制器）
+
+#### 模式 5：V2 Builder + TuyaThermostatV2（溫控器最佳實踐）
+**適用**：溫控器/TRV
+```python
+class MyThermostat(TuyaThermostatV2):
+    _CONSTANT_ATTRIBUTES = {
+        abs_min_heat_setpoint_limit: 500,   # 5.00°C
+        abs_max_heat_setpoint_limit: 3000,  # 30.00°C
+        ctrl_sequence_of_oper: Heating_Only,
+    }
+
+TuyaQuirkBuilder(mfr, "TS0601")
+    .adds(MyThermostat)
+    .tuya_dp(dp_id=1, ep_attribute="thermostat",
+             attribute_name="system_mode",
+             converter=lambda x: {True: Heat, False: Off}[x],
+             dp_converter=lambda x: {Heat: True, Off: False}[x])
+    .tuya_dp(dp_id=2, ep_attribute="thermostat",
+             attribute_name="occupied_heating_setpoint",
+             converter=lambda x: x * 10,
+             dp_converter=lambda x: x // 10)
+    .skip_configuration()
+    .add_to_registry()
+```
+**來源**：zhaquirks/tuya/tuya_trv.py（官方 V2 模式）
+
+#### 模式 6：完全自訂 MCU + 多端點路由（最複雜）
+**適用**：多區溫控 VRV、多功能面板
+```python
+class MyMCU(TuyaMCUCluster):
+    # 完全覆寫 handle_cluster_request
+    # 自建跨端點 DP 路由邏輯
+    # 自建 send_dp() 方法
+    # 可能需要自建通訊協議處理
+
+class MyThermostat(Thermostat, TuyaLocalCluster):
+    _CONSTANT_ATTRIBUTES = {...}
+    async def write_attributes(self, attrs, ...):
+        mcu = _find_mcu(self.endpoint.device)
+        # 直接建構 DP 並發送
+
+TuyaQuirkBuilder(mfr, "TS0603")
+    .adds(MyThermostat)
+    .adds_endpoint(2, device_type=THERMOSTAT)
+    .adds(MyThermostat, endpoint_id=2)
+    # ... 更多端點
+    .tuya_enchantment(read_attr_spell=True, data_query_spell=True)
+    .skip_configuration()
+    .add_to_registry(replacement_cluster=MyMCU, force_add_cluster=True)
+```
+**範例**：ts0603_climate_TZE208_7aovt83n.py（6區 VRV 空調）
+
+### 9.5 常見陷阱與解決方案
+
+| 陷阱 | 症狀 | 解決方案 |
+|------|------|----------|
+| `TuyaClusterData.attr_value: int` | 字串 DP 寫入報 ValueError | 自訂 MCU cluster 覆寫 write_attributes，直接建構 TuyaCommand |
+| `.replaces()` 被 `add_to_registry()` 覆蓋 | 自訂 MCU cluster 不生效 | 使用 `add_to_registry(replacement_cluster=MyMCU)` |
+| Light/Switch 互斥衝突 | OnOff cluster 產生 Switch 而非 Light | 使用 `.replaces_endpoint(device_type=ON_OFF_LIGHT)` 強制 Light |
+| 跨端點 DP 路由 | 端點 2 的 cluster 無法存取 MCU | `self.endpoint.device.endpoints[1].tuya_manufacturer` |
+| MCU 忽略同幀多 DP | 第二個 DP 被忽略 | 分開發送或使用 batch queue 延遲合併 |
+| ZHA fan 只有 3 速 | 6 速風扇只顯示 Low/Med/High | 模組載入時 monkey-patch SPEED_RANGE |
+| ZHA fan 無方向支援 | 無法設定風扇正反轉 | monkey-patch ZHA Fan entity 和 HA ZhaFan bridge |
+| `Default_Response` 大小寫 | `AttributeError` 導致 HTTP 500 | 使用 `GeneralCommand.Default_Response`（注意大小寫）|
+| `NoManufacturerCluster` 遺漏 | 設備不回應 ZCL 命令 | 自訂 cluster 用 NM 變體：`class MyNM(NoManufacturerCluster, My)` |
+| `TuyaLocalCluster` 遺漏 | ZHA 嘗試 OTA 讀取不存在的屬性 | 自訂 cluster 繼承 `TuyaLocalCluster` mixin |
+
+### 9.6 `send_dp` 幫手方法模式
+
+所有自訂 MCU cluster 共用的 DP 發送模式：
+
+```python
+async def send_dp(self, dpd: TuyaDatapointData):
+    """發送單個 DP 到設備。"""
+    cmd = TuyaCommand(
+        status=0,
+        tsn=self.endpoint.device.application.get_sequence(),
+        datapoints=[dpd],
+    )
+    # Fire-and-forget（不等回應，靠設備回報確認）
+    asyncio.get_running_loop().call_soon(
+        functools.partial(
+            self.create_catching_task,
+            self.command(TUYA_MCU_COMMAND, cmd, expect_reply=False),
+        )
+    )
+```
+
+或更完整的 batch 版本（用於 Light quirk 的批量 DP）：
+```python
+# 累積 DPs
+self._pending_dps[dp_id] = TuyaDatapointData(dp=dp_id, data=tuya_data)
+# 排程合併發送（15ms 防抖）
+self._schedule_flush()
+
+async def flush_batch(self):
+    """合併所有待發 DP 為一個幀。"""
+    dps = list(self._pending_dps.values())
+    self._pending_dps.clear()
+    cmd = TuyaCommand(
+        status=0, tsn=..., datapoints=dps
+    )
+    await self.command(TUYA_MCU_COMMAND, cmd, expect_reply=False)
+```
+
+### 9.7 Simon 設備對照：預期架構判斷依據
+
+| 判斷標準 | 標準 ZCL (如 S2100) | Tuya MCU (TS0601) |
+|----------|---------------------|-------------------|
+| Zigbee 模型 | S2100-XXXX | TS0601 / TS0603 |
+| 製造商字串 | `_TZ2000_xxxxx` | `_TZE200/204/284_xxxxx` |
+| endpoint 結構 | 每路一個 endpoint，各有獨立 cluster | 通常只有 endpoint 1 + 0xEF00 |
+| cluster 0xEF00 | 無 | 有 |
+| 功能 cluster | 標準 ZCL (OnOff/LevelControl/...) | 虛擬（需 quirk 建立） |
+| 操作方式 | 直接 ZCL 命令 | 透過 DP 協議 |
+| quirk 框架 | `QuirkBuilder` | `TuyaQuirkBuilder` |
+
+**配對後立即可判斷**：看 endpoint 1 是否有 cluster 0xEF00。
+
+---
+
 ## 參考資源
 
 - [TuyaQuirkBuilder Wiki](https://github.com/zigpy/zha-device-handlers/wiki/Tuya-%E2%80%90-v2-Quirk-with-TuyaQuirkBuilder)
 - [tuya.md 文件](https://github.com/zigpy/zha-device-handlers/blob/dev/tuya.md)
 - [TuyaQuirkBuilder 源碼](https://github.com/zigpy/zha-device-handlers/blob/dev/zhaquirks/tuya/builder/__init__.py)
+- [tuya_trv.py V2 溫控器範例](https://github.com/zigpy/zha-device-handlers/blob/dev/zhaquirks/tuya/tuya_trv.py)
+- [ts0601_dimmer.py V1 調光範例](https://github.com/zigpy/zha-device-handlers/blob/dev/zhaquirks/tuya/ts0601_dimmer.py)
+- [ts0601_electric_heating.py 電暖氣範例](https://github.com/zigpy/zha-device-handlers/blob/dev/zhaquirks/tuya/ts0601_electric_heating.py)
 - [Zigbee2MQTT Simon 支援 Issue #23354](https://github.com/Koenkk/zigbee2mqtt/issues/23354)
 - [Zigbee2MQTT Simon 支援 Discussion #26491](https://github.com/Koenkk/zigbee2mqtt/discussions/26491)
 - [涂鴉調光開關 DP 標準](https://developer.tuya.com/en/docs/iot/f?id=K9t2a5li5awj8)
@@ -575,3 +956,6 @@ Quirk 內部命名：
 - [Simon 官網 i7 Smart](https://www.simon-apac.com/contents/products/simon-smart.html)
 - [Simon 智能新風開關拆解（CSDN）](https://blog.csdn.net/DPSmart/article/details/137814862)
 - [Threecubes Simon i7 產品頁](https://www.threecubes.com.sg/collections/simon)
+- [ZHA 實體匹配機制 DeepWiki](https://deepwiki.com/home-assistant/core/6.2-zha-(zigbee-home-automation))
+- [HA Community: 如何建立 Tuya Quirk](https://community.home-assistant.io/t/my-tuya-device-doesnt-work-with-zha-or-how-to-build-a-tuya-quirk/806728)
+- [Writing ZHA Quirks Blog](https://semolex.online/post/writing-zha-quirks/)

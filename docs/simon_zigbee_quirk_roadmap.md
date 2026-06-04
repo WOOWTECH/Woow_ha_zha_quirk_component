@@ -205,8 +205,7 @@ class SimonThermostat(TuyaThermostat):
 **⚠️ 注意事項**：
 - Simon 溫控器可能是多合一型（空調+地暖+新風），DP 結構可能比標準更複雜
 - 需要實際抓取 DP 才能確定完整映射
-- 現有 `ts0603_climate_TZE208_7aovt83n.py` (57KB) 可作為複雜 climate quirk 的參考
-- 同時參考 `patch_zha_climate.py` 了解 ZHA climate 平台的限制與修補方式
+- 需要實際抓取 DP 才能確定完整映射方式
 
 ---
 
@@ -505,10 +504,8 @@ sshpass -p 'woowtech' ssh ... \
 | `ts0601_cover_TZE284_qxjkdfyt.py` | 捲簾電機 | Tuya MCU | ✅ 已完成 |
 | `ts0601_light_TZE284_gt5al3bl.py` | Gledopto SPI LED | Tuya MCU | ✅ 已完成 |
 | `ts0601_fan_TZE200_hmgktzj2.py` | 吊扇燈 | Tuya MCU | ✅ 已完成 |
-| `ts0603_climate_TZE208_7aovt83n.py` | 溫控器 | Tuya MCU | ✅ 已完成 |
 | `ts0001_switch_TZ3000_tqlv4ug4.py` | 1路開關 | 標準 ZCL | ✅ 已完成 |
 | `ts0002_switch_TZ3000_denobasq.py` | 2路開關 | 標準 ZCL | ✅ 已完成 |
-| `patch_zha_climate.py` | ZHA Climate 修補 | — | ✅ 輔助 |
 
 ---
 
@@ -846,7 +843,7 @@ TuyaQuirkBuilder(mfr, "TS0601")
 **來源**：zhaquirks/tuya/tuya_trv.py（官方 V2 模式）
 
 #### 模式 6：完全自訂 MCU + 多端點路由（最複雜）
-**適用**：多區溫控 VRV、多功能面板
+**適用**：多區溫控、多功能面板
 ```python
 class MyMCU(TuyaMCUCluster):
     # 完全覆寫 handle_cluster_request
@@ -860,7 +857,7 @@ class MyThermostat(Thermostat, TuyaLocalCluster):
         mcu = _find_mcu(self.endpoint.device)
         # 直接建構 DP 並發送
 
-TuyaQuirkBuilder(mfr, "TS0603")
+TuyaQuirkBuilder(mfr, "TS0601")
     .adds(MyThermostat)
     .adds_endpoint(2, device_type=THERMOSTAT)
     .adds(MyThermostat, endpoint_id=2)
@@ -869,7 +866,6 @@ TuyaQuirkBuilder(mfr, "TS0603")
     .skip_configuration()
     .add_to_registry(replacement_cluster=MyMCU, force_add_cluster=True)
 ```
-**範例**：ts0603_climate_TZE208_7aovt83n.py（6區 VRV 空調）
 
 ### 9.5 常見陷阱與解決方案
 
@@ -928,7 +924,7 @@ async def flush_batch(self):
 
 | 判斷標準 | 標準 ZCL (如 S2100) | Tuya MCU (TS0601) |
 |----------|---------------------|-------------------|
-| Zigbee 模型 | S2100-XXXX | TS0601 / TS0603 |
+| Zigbee 模型 | S2100-XXXX | TS0601 |
 | 製造商字串 | `_TZ2000_xxxxx` | `_TZE200/204/284_xxxxx` |
 | endpoint 結構 | 每路一個 endpoint，各有獨立 cluster | 通常只有 endpoint 1 + 0xEF00 |
 | cluster 0xEF00 | 無 | 有 |

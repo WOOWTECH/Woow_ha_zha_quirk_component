@@ -40,8 +40,7 @@
 
 ### 測試 2: Quirks 模組載入驗證
 - 透過 HA log 確認每個 quirk 模組都被載入
-- 預期載入 10 個模組（不含 __init__.py）
-- 特別注意 patch_zha_climate.py 的 monkey-patch 是否成功（因為 ZHA 未啟用可能會 import 失敗）
+- 預期載入 9 個模組（不含 __init__.py）
 
 ### 測試 3: tuya_dp_sender 載入驗證
 - 確認 tuya_dp_sender integration 成功載入
@@ -68,10 +67,7 @@
    - 處理：檢查哪些模組失敗，分析原因
    - 如果是 import 階段就失敗，需要加 try-except
 
-2. **patch_zha_climate.py** → monkey-patch ZHA 內部模組，ZHA 未啟用時可能找不到目標
-   - 處理：確認是否需要在無 ZHA 時跳過
-
-3. **tuya_dp_sender 依賴 ZHA** → manifest 宣告 dependencies: ["zha"]
+2. **tuya_dp_sender 依賴 ZHA**（已移除）→ manifest 宣告 dependencies: ["zha"]
    - 處理：如果 ZHA 未設定，HA 可能拒絕載入此 integration
 
 ## 成功標準

@@ -24,8 +24,8 @@
   <img src="https://img.shields.io/badge/Python-3.12+-yellow?logo=python" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/HACS-Compatible-green?logo=homeassistantcommunitystore" alt="HACS Compatible" />
   <img src="https://img.shields.io/badge/License-MIT-red" alt="MIT License" />
-  <img src="https://img.shields.io/badge/Quirks-11%20files-blue" alt="11 Quirk Files" />
-  <img src="https://img.shields.io/badge/Devices-9%20models-brightgreen" alt="9 Device Models" />
+  <img src="https://img.shields.io/badge/Quirks-9%20files-blue" alt="9 Quirk Files" />
+  <img src="https://img.shields.io/badge/Devices-8%20models-brightgreen" alt="8 Device Models" />
 </p>
 
 <p align="center">
@@ -48,10 +48,7 @@
 | 8 | Tuya TS0601 Ceiling Fan | Ceiling Fan + Light | `_TZE200_hmgktzj2` | `fan` + `light` + `select` | 6-speed fan, 3 presets, direction control, 3-level color temp |
 | 9 | Gledopto GL-SPI-206P | SPI LED Controller | `_TZE284_gt5al3bl` | `light` + `select` | RGBCW color, 16 scene effects, pixel count, chip type config |
 | 10 | Zemismart 4-Gang Screen Switch | 4-Gang Touch Switch | `_TZE204_wwaeqnrf` | `switch` | Screen label write, countdown timer, child lock, LED colors |
-| 11 | VRV HVAC Controller | 6-Zone AC Controller | `_TZE208_7aovt83n` | `climate` (x6) | 6-zone thermostat, fan speed, extended Tuya protocol |
-| 12 | Tuya Curtain Track | Curtain Track Motor | `_TZE200_nogaemzt` | `cover` | Motor direction, limit switches, motor mode |
-
-Additionally includes `patch_zha_climate.py` — a ZHA Climate platform patcher that adds extended fan mode support (Low/Medium/High/Auto) and fixes the `write_attributes_safe` crash bug.
+| 11 | Tuya Curtain Track | Curtain Track Motor | `_TZE200_nogaemzt` | `cover` | Motor direction, limit switches, motor mode |
 
 ---
 
@@ -200,33 +197,6 @@ data:
 
 ---
 
-### VRV HVAC Controller (`_TZE208_7aovt83n`)
-
-Extended Tuya protocol (command IDs offset +0x30). 6 independent climate zones.
-
-| Zone | Switch DP | Target Temp DP | Current Temp DP | Mode DP | Fan Speed DP |
-|------|-----------|---------------|-----------------|---------|-------------|
-| 1 | 1 | 2 | 3 | 4 | 5 |
-| 2 | 101 | 102 | 103 | 104 | 105 |
-| 3 | 106 | 107 | 108 | 109 | 110 |
-| 4 | 111 | 112 | 113 | 114 | 115 |
-| 5 | 116 | 117 | 118 | 119 | 120 |
-| 6 | 121 | 122 | 123 | 124 | 125 |
-
-**HVAC Mode Mapping:**
-
-| Tuya Mode | ZCL System Mode | Description |
-|-----------|----------------|-------------|
-| 0 | Auto | Automatic |
-| 1 | Cool | Cooling |
-| 2 | Heat | Heating |
-| 3 | Dry | Dehumidify |
-| 4 | Fan_only | Fan only |
-| 5 | Heat | Floor heat (mapped to Heat) |
-| 6 | Emergency_Heating | Supplemental heat |
-
----
-
 ### Tuya Curtain Track (`_TZE200_nogaemzt`)
 
 Uses single DP2 for both position set and position report.
@@ -251,18 +221,16 @@ Uses single DP2 for both position set and position report.
 graph TB
     subgraph "Home Assistant"
         HA_ZHA[ZHA Integration]
-        HA_ENTITIES["HA Entities<br/>(switch / cover / fan / light / climate / select)"]
+        HA_ENTITIES["HA Entities<br/>(switch / cover / fan / light / select / number)"]
     end
 
     subgraph "WOOW ZHA Quirks"
         INIT["__init__.py<br/>Auto-loader"]
-        QUIRKS["Quirk Modules<br/>(11 files)"]
-        PATCH["patch_zha_climate.py<br/>ZHA Platform Patcher"]
+        QUIRKS["Quirk Modules<br/>(9 files)"]
     end
 
     subgraph "ZHA + zigpy"
         ZIGPY_REG["zigpy DEVICE_REGISTRY"]
-        ZHA_PLATFORM["ZHA Platform<br/>(fan / climate / ...)"]
     end
 
     subgraph "Zigbee Network"
@@ -272,7 +240,6 @@ graph TB
     HA_ZHA --> HA_ENTITIES
     INIT -->|"pkgutil.walk_packages()"| QUIRKS
     QUIRKS -->|"QuirkBuilder.add_to_registry()"| ZIGPY_REG
-    PATCH -->|"monkey-patch"| ZHA_PLATFORM
     ZIGPY_REG --> HA_ZHA
     HA_ZHA <--> DEVICES
 ```
@@ -283,11 +250,9 @@ graph TB
 
 2. **Quirk Registration**: Each quirk module uses `QuirkBuilder` or `TuyaQuirkBuilder` fluent chain API to define device behavior and register into zigpy's `DEVICE_REGISTRY`.
 
-3. **Entity Creation**: ZHA reads the quirk metadata (clusters, attributes, entity types) and creates appropriate HA entities (switches, covers, fans, lights, climate, selects).
+3. **Entity Creation**: ZHA reads the quirk metadata (clusters, attributes, entity types) and creates appropriate HA entities (switches, covers, fans, lights, selects, numbers).
 
 4. **Tuya MCU Bridge**: For TS0601 devices, custom ZCL clusters bridge between standard ZCL protocol and Tuya MCU DP commands on cluster `0xEF00`.
-
-5. **Platform Patches**: `patch_zha_climate.py` and the ceiling fan quirk apply runtime patches to ZHA platform code for features not natively supported (extended fan modes, direction control).
 
 ---
 
@@ -349,7 +314,6 @@ That's it. No additional configuration is needed. The component automatically:
 
 - **No `custom_quirks_path` needed** — This component handles quirk loading automatically
 - If you previously set `zha: custom_quirks_path:`, you can remove it (unless you have other quirks outside this package)
-- The `patch_zha_climate.py` script must be run manually inside the HA container if you need VRV HVAC extended fan mode support
 - Requires ZHA integration to be installed and configured
 - Dependencies: `zha`, `zha-quirks`, `zigpy`
 
@@ -365,7 +329,6 @@ Woow_ha_zha_quirk_component/
 │       ├── manifest.json                            # HA component manifest
 │       └── quirks/
 │           ├── __init__.py
-│           ├── patch_zha_climate.py                  # ZHA climate platform patcher
 │           ├── simon_i7_s2100.py                     # Simon i7 1-4 gang switches
 │           ├── ts0001_switch_TZ3000_tqlv4ug4.py      # TS0001 single switch
 │           ├── ts0002_switch_TZ3000_denobasq.py      # TS0002 dual switch
@@ -373,7 +336,6 @@ Woow_ha_zha_quirk_component/
 │           ├── ts0601_fan_TZE200_hmgktzj2.py         # Ceiling fan + light
 │           ├── ts0601_light_TZE284_gt5al3bl.py       # SPI LED controller
 │           ├── ts0601_switch_TZE204_wwaeqnrf.py      # 4-gang screen switch
-│           ├── ts0603_climate_TZE208_7aovt83n.py     # VRV 6-zone HVAC
 │           └── tuya_cover_nogaemzt.py                # Curtain track motor
 │
 ├── config/
@@ -420,16 +382,6 @@ from zhaquirks.tuya.builder import TuyaQuirkBuilder
 
 3. Restart Home Assistant — the auto-loader picks up new files automatically
 
-### Running the ZHA Climate Patch
-
-For VRV HVAC controller support, run inside the HA container:
-
-```bash
-python3 /config/custom_components/woow_zha_quirks/quirks/patch_zha_climate.py
-```
-
-Then restart Home Assistant.
-
 ### Component Versions
 
 | Component | Version | Description |
@@ -438,7 +390,6 @@ Then restart Home Assistant.
 | Simon i7 quirk | v3 | AllOnOff virtual endpoint |
 | Ceiling fan quirk | v5 | 6-speed + direction + preset |
 | SPI LED quirk | v9 | Batch queue + correct scene format |
-| VRV HVAC quirk | v1 | Extended protocol (0x30+ offset) |
 | Screen switch quirk | v2 | Screen label write support |
 
 ---

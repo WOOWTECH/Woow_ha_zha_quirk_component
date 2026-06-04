@@ -14,7 +14,22 @@ Verified DP Map (tested 2026-04-23 via zha-toolkit):
   DP  102   : Backlight brightness        (value, 0-100%)
   DP  103   : ON indicator color          (enum: 0-6)
   DP  104   : OFF indicator color         (enum: 0-6)
-  DP  105-108: Switch 1-4 screen label    (string, write-only)
+  DP  105-108: Switch 1-4 screen label    (raw/string, write-only, 12-char max)
+
+Screen labels (DP105-108):
+  These are write-only DPs that set the text displayed on each gang's
+  screen. They use RAW DP type (0x00) with UTF-8 encoded bytes.
+  Since ZHA has no text entity platform, these are registered as
+  writable attributes only. Use zha_toolkit or HA developer tools
+  to write values:
+    service: zha.set_zigbee_cluster_attribute
+    data:
+      ieee: <device_ieee>
+      endpoint_id: 1
+      cluster_id: 0xEF00
+      cluster_type: in
+      attribute: screen_label_1
+      value: "客廳"
 
 Device Signature (from scan_device):
   Endpoint 1:
@@ -26,10 +41,22 @@ Device Signature (from scan_device):
     Output: [0x0021 GreenPower]
 """
 
+import logging
+
 import zigpy.types as t
 from zigpy.quirks.v2 import EntityType
 from zigpy.zcl import foundation
+from zhaquirks.tuya import (
+    TUYA_MCU_COMMAND,
+    TuyaCommand,
+    TuyaData,
+    TuyaDatapointData,
+    TuyaDPType,
+)
 from zhaquirks.tuya.builder import TuyaQuirkBuilder
+from zhaquirks.tuya.mcu import TuyaMCUCluster
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -62,6 +89,77 @@ class PowerOnState(t.enum8):
     Off = 0x00
     On = 0x01
     Memory = 0x02
+
+
+def _str_to_raw_tuya(value) -> TuyaData:
+    """Convert a string to TuyaData with RAW type (UTF-8 encoded bytes).
+
+    The device MCU expects RAW (0x00) DP type for screen labels,
+    not STRING (0x03). Limited to 12 characters.
+    """
+    td = TuyaData()
+    td.dp_type = TuyaDPType.RAW
+    if isinstance(value, str):
+        td.raw = value[:12].encode("utf-8")
+    elif isinstance(value, (bytes, bytearray)):
+        td.raw = bytes(value[:12])
+    else:
+        td.raw = str(value)[:12].encode("utf-8")
+    return td
+
+
+# Screen label attribute name → DP ID mapping
+_SCREEN_LABEL_DPS = {
+    "screen_label_1": 105,
+    "screen_label_2": 106,
+    "screen_label_3": 107,
+    "screen_label_4": 108,
+}
+
+
+class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
+    """TuyaMCU cluster with direct string DP write support.
+
+    Overrides write_attributes to handle screen_label_* attributes
+    directly, bypassing TuyaClusterData (which only supports int values).
+    """
+
+    async def write_attributes(self, attributes, manufacturer=None, **kwargs):
+        """Handle string-type screen label attributes directly."""
+        regular_attrs = {}
+        for attr_name, value in attributes.items():
+            # Resolve int attr IDs to names
+            if isinstance(attr_name, int):
+                attr_def = self.attributes.get(attr_name)
+                name = attr_def.name if attr_def else None
+            else:
+                name = attr_name
+
+            if name in _SCREEN_LABEL_DPS:
+                # Send directly as Tuya DP command, bypassing TuyaClusterData
+                dp_id = _SCREEN_LABEL_DPS[name]
+                tuya_data = _str_to_raw_tuya(value)
+                dpd = TuyaDatapointData(dp=dp_id, data=tuya_data)
+                cmd = TuyaCommand(
+                    status=0,
+                    tsn=self.endpoint.device.application.get_sequence(),
+                    datapoints=[dpd],
+                )
+                await self.command(0x00, cmd)
+                # Update local cache
+                attr_id = self.attributes_by_name[name].id
+                self._update_attribute(attr_id, value)
+                _LOGGER.debug(
+                    "Screen label DP%d written: %s", dp_id, value,
+                )
+            else:
+                regular_attrs[attr_name] = value
+
+        if regular_attrs:
+            return await super().write_attributes(
+                regular_attrs, manufacturer=manufacturer, **kwargs
+            )
+        return [[foundation.WriteAttributesStatusRecord(foundation.Status.SUCCESS)]]
 
 
 # ────────────────────────────────────────────────────────────────
@@ -239,27 +337,38 @@ class PowerOnState(t.enum8):
         translation_key="off_color",
         fallback_name="OFF Indicator Color",
     )
-    # ── Screen labels (DP 105-108) → write-only string DPs ──
+    # ── Screen labels (DP 105-108) — write-only string DPs ──
+    # Registered as writable attributes with RAW-type dp_converter.
+    # No HA entity (ZHA has no text platform), but writable via
+    # zha.set_zigbee_cluster_attribute or zha_toolkit.
     .tuya_dp_attribute(
         dp_id=105,
         attribute_name="screen_label_1",
         type=t.CharacterString,
+        access=foundation.ZCLAttributeAccess.Read | foundation.ZCLAttributeAccess.Write,
+        dp_converter=_str_to_raw_tuya,
     )
     .tuya_dp_attribute(
         dp_id=106,
         attribute_name="screen_label_2",
         type=t.CharacterString,
+        access=foundation.ZCLAttributeAccess.Read | foundation.ZCLAttributeAccess.Write,
+        dp_converter=_str_to_raw_tuya,
     )
     .tuya_dp_attribute(
         dp_id=107,
         attribute_name="screen_label_3",
         type=t.CharacterString,
+        access=foundation.ZCLAttributeAccess.Read | foundation.ZCLAttributeAccess.Write,
+        dp_converter=_str_to_raw_tuya,
     )
     .tuya_dp_attribute(
         dp_id=108,
         attribute_name="screen_label_4",
         type=t.CharacterString,
+        access=foundation.ZCLAttributeAccess.Read | foundation.ZCLAttributeAccess.Write,
+        dp_converter=_str_to_raw_tuya,
     )
     .skip_configuration()
-    .add_to_registry()
+    .add_to_registry(replacement_cluster=ScreenLabelTuyaMCUCluster)
 )

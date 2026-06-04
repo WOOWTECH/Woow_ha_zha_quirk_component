@@ -371,9 +371,13 @@ class TuyaVRVBasicCluster(Basic):
             _VRV_INIT_TRIGGERED_IEES.discard(ieee)  # Allow retry
             return
         # Use __dict__ to bypass zigpy Cluster.__getattr__ command lookup
+        if not isinstance(mcu, TuyaVRVMCUCluster):
+            _LOGGER.debug("[TS0603 BASIC] MCU is %s, not TuyaVRVMCUCluster, skip", type(mcu).__name__)
+            _VRV_INIT_TRIGGERED_IEES.discard(ieee)
+            return
         if not mcu.__dict__.get("_proactive_sent", False):
             mcu.__dict__["_proactive_sent"] = True
-            mcu.create_catching_task(mcu._proactive_init())
+            mcu.create_catching_task(TuyaVRVMCUCluster._proactive_init(mcu))
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -440,7 +444,7 @@ class TuyaVRVMCUCluster(TuyaMCUCluster):
         result = await super().bind()
         if not self.__dict__.get("_proactive_sent", False):
             self.__dict__["_proactive_sent"] = True
-            self.create_catching_task(self._proactive_init())
+            self.create_catching_task(TuyaVRVMCUCluster._proactive_init(self))
         return result
 
     async def _proactive_init(self):
@@ -454,10 +458,10 @@ class TuyaVRVMCUCluster(TuyaMCUCluster):
             _LOGGER.warning("[TS0603 PROACTIVE] Starting proactive init")
             await asyncio.sleep(5)  # Wait for device to settle after join
 
-            if not self._is_controller_running():
+            if not TuyaVRVMCUCluster._is_controller_running(self):
                 _LOGGER.warning("[TS0603 PROACTIVE] Controller not ready, waiting more")
                 await asyncio.sleep(10)
-                if not self._is_controller_running():
+                if not TuyaVRVMCUCluster._is_controller_running(self):
                     _LOGGER.warning("[TS0603 PROACTIVE] Controller still not ready, abort")
                     # Allow re-trigger
                     self.__dict__["_proactive_sent"] = False
@@ -820,7 +824,7 @@ class TuyaVRVMCUCluster(TuyaMCUCluster):
         CRITICAL: Respond FAST — the device only sends ~3 heartbeats before
         giving up if we don't respond correctly.
         """
-        if not self._is_controller_running():
+        if not TuyaVRVMCUCluster._is_controller_running(self):
             return
 
         hb = self.__dict__.get("_heartbeat_count", 0)

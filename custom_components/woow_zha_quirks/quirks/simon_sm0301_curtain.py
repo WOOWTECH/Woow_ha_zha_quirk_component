@@ -18,31 +18,36 @@ Endpoint structure (original):
 
 Problem: The device reports 4 identical endpoints but it is a
 single-channel curtain controller. Only EP1 is functional.
-This creates 22 entities (4 covers, 4 binary_sensors, 4 numbers,
-4 selects, 4 firmware updates, 1 identify, 1 RSSI/LQI) when only
-~5 are needed.
 
 Calibration:
-  Physical: Press the device "Next" button twice; the interval between
-  presses defines the travel time.
-  ZCL: The calibrated travel distance is stored in the Shade
-  Configuration cluster (0x0100) attribute closed_limit (0x0010) as a
-  uint16 value representing motor steps (e.g. 17800).  Writing this
-  attribute adjusts the travel limit without re-calibrating physically.
+  Physical: Press the device "Next" button twice to auto-calibrate.
+  ZCL: The travel distance is stored in Shade Configuration (0x0100)
+  attribute closed_limit (0x0010) as uint16 motor steps (e.g. 17800).
+  Writing this attribute adjusts the travel limit directly.
+
+  The "Reset Travel Limit" button writes closed_limit=65534 (max),
+  which removes any travel restriction so the motor can run its full
+  range.  Use the "Travel Limit" number entity to fine-tune the value.
+
+  NOTE: The Tuya cloud DP3 (cur_calibration) is mapped to private
+  clusters FC55/FC56/FC57 which accept ZCL writes at the protocol
+  level but the device firmware does not act on them.  Auto-calibration
+  can only be triggered via the physical button.
 
 Tuya DP map (cloud):
-  DP1   - control         - Enum (open/stop/close)  → mapped to OnOff
-  DP2   - percent_control - Value 0-100              → mapped to LevelControl
-  DP3   - cur_calibration - Enum (start/end)         → 0xFC55/FC56/FC57
-  DP7   - switch_backlight - Bool                    → 0xFC55/FC56/FC57
-  DP14  - light_mode      - Enum (none/enable_white/enable_yellow)
-  DP101 - backlight_num   - Value 50000-60000
+  DP1   - control         - Enum (open/stop/close)  → OnOff
+  DP2   - percent_control - Value 0-100              → LevelControl
+  DP3   - cur_calibration - Enum (start/end)         → FC56 (FW-locked)
+  DP7   - switch_backlight - Bool                    → FC56
+  DP14  - light_mode      - Enum                     → FC56
+  DP101 - backlight_num   - Value 50000-60000        → FC56
 
 Quirk fixes:
   1. Remove phantom endpoints EP2-EP4 (only EP1 is real)
   2. Suppress useless OnOff config entities (StartUpOnOff)
   3. Suppress useless LevelControl config entities (start_up_current_level)
   4. Expose Shade closed_limit as a Number entity for travel calibration
+  5. Expose "Reset Travel Limit" button (writes closed_limit=65534)
 """
 
 from zigpy.quirks.v2 import QuirkBuilder
@@ -82,6 +87,16 @@ SHADE = 0x0100
         entity_type=EntityType.CONFIG,
         translation_key="closed_limit",
         fallback_name="Travel Limit",
+    )
+    # ── Reset Travel Limit button (writes max value) ──
+    .write_attr_button(
+        attribute_name="closed_limit",
+        attribute_value=65534,
+        cluster_id=SHADE,
+        endpoint_id=1,
+        entity_type=EntityType.CONFIG,
+        translation_key="reset_travel_limit",
+        fallback_name="Reset Travel Limit",
     )
     .skip_configuration()
     .add_to_registry()

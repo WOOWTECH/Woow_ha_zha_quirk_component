@@ -57,7 +57,7 @@
 | 11 | Tuya Curtain Track | Curtain Track Motor | `_TZE200_nogaemzt` | `cover` | Motor direction, limit switches, motor mode |
 | 12 | Simon SM0502 | 2-Gang Dimmer Switch | `_TZ2000_qc1ntn3c` | `light` + `number` | Min/max brightness split, All On/Off virtual endpoint, indicator LED |
 | 13 | Tuya TS0502B | CCT Dimmable Light | `_TZ3000_yeygk4hw` | `light` | Kelvin↔mireds auto-conversion, CCT-only mode fix (2500-6500K) |
-| 14 | Simon SM0301 | 1-CH Curtain Controller | `_TYZB01_koulgwmy` | `cover` | Phantom EP2-4 removal, forward/reverse output, position control |
+| 14 | Simon SM0301 | 1-CH Curtain Controller | `_TYZB01_koulgwmy` | `cover` + `number` | Phantom EP2-4 removal, forward/reverse output, position control, travel limit calibration |
 
 ---
 
@@ -127,12 +127,13 @@ The device stores color temperature in Kelvin but ZCL expects mireds (1,000,000 
 
 1-channel curtain controller with forward/reverse relay output. Standard ZCL Shade device (device_type 0x0200) using OnOff + LevelControl clusters.
 
-**Problem:** Device reports 4 identical endpoints (EP1-EP4) but only EP1 is functional. Creates 22 entities without quirk. Quirk removes EP2-4 and suppresses config entities, leaving 4 clean entities.
+**Problem:** Device reports 4 identical endpoints (EP1-EP4) but only EP1 is functional. Creates 22 entities without quirk. Quirk removes EP2-4 and suppresses config entities, leaving 5 clean entities.
 
 | Feature | Cluster | Attribute | Entity Type | Description |
 |---------|---------|-----------|-------------|-------------|
 | Cover | 0x0006 + 0x0008 | `on_off` + `current_level` | Standard (cover) | Open/close/stop/set_position, device_class=shade |
 | Opening State | 0x0006 | `on_off` | binary_sensor | Indicates if curtain is currently moving |
+| Travel Limit | 0x0100 | `closed_limit` (0x0010) | Config (number) | Motor travel distance in steps (100-65534, step 100) |
 
 **Tuya Cloud DP Map (for reference):**
 
@@ -145,7 +146,9 @@ The device stores color temperature in Kelvin but ZCL expects mireds (1,000,000 
 | 14 | Indicator LED | `light_mode` | Enum | none, enable_white, enable_yellow |
 | 101 | Backlight Number | `backlight_num` | Value | 50000-60000 |
 
-**Calibration:** Press device "Next" button twice; the interval defines travel time.
+**Calibration:**
+- **Physical:** Press device "Next" button twice; the interval defines travel time.
+- **ZCL:** The travel distance is stored in Shade Configuration cluster (0x0100) attribute `closed_limit` (0x0010) as motor steps. Adjust the Travel Limit number entity to fine-tune without physical recalibration.
 
 ---
 
@@ -484,7 +487,7 @@ from zhaquirks.tuya.builder import TuyaQuirkBuilder
 | Simon i7 quirk | v3 | AllOnOff virtual endpoint |
 | Simon SM0502 quirk | v5 | Min/max brightness split + AllOnOff |
 | TS0502B CCT quirk | v1 | Kelvin↔mireds conversion + CCT-only fix |
-| SM0301 curtain quirk | v1 | Phantom EP removal + entity cleanup |
+| SM0301 curtain quirk | v2 | Phantom EP removal + travel limit calibration |
 | Ceiling fan quirk | v5 | 6-speed + direction + preset |
 | SPI LED quirk | v9 | Batch queue + correct scene format |
 | Screen switch quirk | v2 | Screen label write support |

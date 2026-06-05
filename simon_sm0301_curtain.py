@@ -20,19 +20,33 @@ Problem: The device reports 4 identical endpoints but it is a
 single-channel curtain controller. Only EP1 is functional.
 
 Calibration:
-  Physical: Press the device "Next" button twice to auto-calibrate.
-  ZCL: The travel distance is stored in Shade Configuration (0x0100)
+  This device has NO physical calibration button.  Calibration is
+  done entirely over ZCL using Shade Configuration attribute 0x0011
+  (an undocumented enum8 — NOT the standard ZCL mode attr 0x0012,
+  which this firmware ignores).
+
+  Auto-calibration workflow:
+    1. Press "Start Calibration" button  (writes attr 0x0011 = 1)
+       → device enters Configure mode
+    2. Open the cover to the desired fully-open position, then stop
+       → device records the zero point
+    3. Close the cover to the desired fully-closed position, then stop
+       → device measures and records closed_limit (motor steps)
+    4. Press "End Calibration" button  (writes attr 0x0011 = 0)
+       → device exits Configure mode and saves the new closed_limit
+
+  The travel distance is stored in Shade Configuration (0x0100)
   attribute closed_limit (0x0010) as uint16 motor steps (e.g. 17800).
-  Writing this attribute adjusts the travel limit directly.
+  This value can also be written directly via the "Travel Limit"
+  number entity.
 
   The "Reset Travel Limit" button writes closed_limit=65534 (max),
   which removes any travel restriction so the motor can run its full
-  range.  Use the "Travel Limit" number entity to fine-tune the value.
+  range.
 
   NOTE: The Tuya cloud DP3 (cur_calibration) is mapped to private
   clusters FC55/FC56/FC57 which accept ZCL writes at the protocol
-  level but the device firmware does not act on them.  Auto-calibration
-  can only be triggered via the physical button.
+  level but the device firmware does not act on them.
 
 Tuya DP map (cloud):
   DP1   - control         - Enum (open/stop/close)  → OnOff
@@ -48,20 +62,49 @@ Quirk fixes:
   3. Suppress useless LevelControl config entities (start_up_current_level)
   4. Expose Shade closed_limit as a Number entity for travel calibration
   5. Expose "Reset Travel Limit" button (writes closed_limit=65534)
+  6. Expose "Start Calibration" / "End Calibration" buttons (attr 0x0011)
 """
 
-from zigpy.quirks.v2 import QuirkBuilder
-from zigpy.quirks.v2 import EntityType
+from typing import Final
+
+import zigpy.types as t
+from zigpy.quirks import CustomCluster
+from zigpy.quirks.v2 import EntityType, QuirkBuilder
+from zigpy.zcl.clusters.closures import Shade as ShadeConfiguration
+from zigpy.zcl.foundation import ZCLAttributeDef
 
 ONOFF = 0x0006
 LEVEL = 0x0008
 SHADE = 0x0100
+
+
+class TuyaShadeConfigCluster(CustomCluster, ShadeConfiguration):
+    """Shade Configuration with Tuya-specific calibration attribute.
+
+    The standard ZCL mode attribute (0x0012) is present but this
+    device's firmware ignores it.  Instead, the undocumented attribute
+    0x0011 (enum8) controls calibration mode:
+      0 = Normal operation
+      1 = Configure / calibration mode
+    """
+
+    class AttributeDefs(ShadeConfiguration.AttributeDefs):
+        """Extended attributes including undocumented 0x0011."""
+
+        calibration_mode: Final = ZCLAttributeDef(
+            id=0x0011,
+            type=t.enum8,
+            access="rw",
+        )
+
 
 # ────────────────────────────────────────────────────────────────
 # SM0301 — 1-channel curtain controller (_TYZB01_koulgwmy)
 # ────────────────────────────────────────────────────────────────
 (
     QuirkBuilder("_TYZB01_koulgwmy", "SM0301")
+    # ── Replace Shade cluster with our extended version ──
+    .replaces(TuyaShadeConfigCluster, endpoint_id=1)
     # ── Remove phantom endpoints (only EP1 is real) ──
     .removes_endpoint(2)
     .removes_endpoint(3)
@@ -97,6 +140,28 @@ SHADE = 0x0100
         entity_type=EntityType.CONFIG,
         translation_key="reset_travel_limit",
         fallback_name="Reset Travel Limit",
+    )
+    # ── Start Calibration button (enters configure mode) ──
+    .write_attr_button(
+        attribute_name="calibration_mode",
+        attribute_value=1,
+        cluster_id=SHADE,
+        endpoint_id=1,
+        entity_type=EntityType.CONFIG,
+        unique_id_suffix="start_calibration",
+        translation_key="start_calibration",
+        fallback_name="Start Calibration",
+    )
+    # ── End Calibration button (exits configure mode) ──
+    .write_attr_button(
+        attribute_name="calibration_mode",
+        attribute_value=0,
+        cluster_id=SHADE,
+        endpoint_id=1,
+        entity_type=EntityType.CONFIG,
+        unique_id_suffix="end_calibration",
+        translation_key="end_calibration",
+        fallback_name="End Calibration",
     )
     .skip_configuration()
     .add_to_registry()

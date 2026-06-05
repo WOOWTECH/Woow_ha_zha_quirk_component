@@ -24,8 +24,8 @@
   <img src="https://img.shields.io/badge/Python-3.12+-yellow?logo=python" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/HACS-Compatible-green?logo=homeassistantcommunitystore" alt="HACS Compatible" />
   <img src="https://img.shields.io/badge/License-MIT-red" alt="MIT License" />
-  <img src="https://img.shields.io/badge/Quirks-11%20files-blue" alt="11 Quirk Files" />
-  <img src="https://img.shields.io/badge/Devices-13%20models-brightgreen" alt="13 Device Models" />
+  <img src="https://img.shields.io/badge/Quirks-12%20files-blue" alt="12 Quirk Files" />
+  <img src="https://img.shields.io/badge/Devices-14%20models-brightgreen" alt="14 Device Models" />
 </p>
 
 <p align="center">
@@ -57,6 +57,7 @@
 | 11 | Tuya Curtain Track | Curtain Track Motor | `_TZE200_nogaemzt` | `cover` | Motor direction, limit switches, motor mode |
 | 12 | Simon SM0502 | 2-Gang Dimmer Switch | `_TZ2000_qc1ntn3c` | `light` + `number` | Min/max brightness split, All On/Off virtual endpoint, indicator LED |
 | 13 | Tuya TS0502B | CCT Dimmable Light | `_TZ3000_yeygk4hw` | `light` | Kelvin↔mireds auto-conversion, CCT-only mode fix (2500-6500K) |
+| 14 | Simon SM0301 | 1-CH Curtain Controller | `_TYZB01_koulgwmy` | `cover` | Phantom EP2-4 removal, forward/reverse output, position control |
 
 ---
 
@@ -119,6 +120,32 @@ The device stores color temperature in Kelvin but ZCL expects mireds (1,000,000 
 | `color_temperature` (0x0007) | 5499 (Kelvin) | 181 (mireds) → HA shows 5524K |
 | `color_temp_physical_min` (0x400B) | 2500 (Kelvin) | 400 (mireds) → HA shows 2500K |
 | `color_temp_physical_max` (0x400C) | 6500 (Kelvin) | 153 (mireds) → HA shows 6535K |
+
+---
+
+### Simon SM0301 (`_TYZB01_koulgwmy`)
+
+1-channel curtain controller with forward/reverse relay output. Standard ZCL Shade device (device_type 0x0200) using OnOff + LevelControl clusters.
+
+**Problem:** Device reports 4 identical endpoints (EP1-EP4) but only EP1 is functional. Creates 22 entities without quirk. Quirk removes EP2-4 and suppresses config entities, leaving 4 clean entities.
+
+| Feature | Cluster | Attribute | Entity Type | Description |
+|---------|---------|-----------|-------------|-------------|
+| Cover | 0x0006 + 0x0008 | `on_off` + `current_level` | Standard (cover) | Open/close/stop/set_position, device_class=shade |
+| Opening State | 0x0006 | `on_off` | binary_sensor | Indicates if curtain is currently moving |
+
+**Tuya Cloud DP Map (for reference):**
+
+| DP ID | Name | Identifier | Type | Values |
+|-------|------|-----------|------|--------|
+| 1 | Curtain Control | `control` | Enum | open, stop, close |
+| 2 | Position | `percent_control` | Value | 0-100, step 10, unit % |
+| 3 | Calibration | `cur_calibration` | Enum | start, end |
+| 7 | Backlight Switch | `switch_backlight` | Bool | — |
+| 14 | Indicator LED | `light_mode` | Enum | none, enable_white, enable_yellow |
+| 101 | Backlight Number | `backlight_num` | Value | 50000-60000 |
+
+**Calibration:** Press device "Next" button twice; the interval defines travel time.
 
 ---
 
@@ -282,7 +309,7 @@ graph TB
 
     subgraph "WOOW ZHA Quirks"
         INIT["__init__.py<br/>Auto-loader"]
-        QUIRKS["Quirk Modules<br/>(11 files)"]
+        QUIRKS["Quirk Modules<br/>(12 files)"]
     end
 
     subgraph "ZHA + zigpy"
@@ -352,7 +379,7 @@ config/
             ├── __init__.py
             ├── simon_i7_s2100.py
             ├── ts0001_switch_TZ3000_tqlv4ug4.py
-            └── ... (10 more quirk files)
+            └── ... (11 more quirk files)
 ```
 
 3. Add `woow_zha_quirks:` to `configuration.yaml`
@@ -394,6 +421,7 @@ Woow_ha_zha_quirk_component/
 │       └── quirks/
 │           ├── __init__.py
 │           ├── simon_i7_s2100.py                     # Simon i7 1-4 gang switches
+│           ├── simon_sm0301_curtain.py                  # Simon SM0301 curtain controller
 │           ├── simon_sm0502_dimmer.py                 # Simon SM0502 2-gang dimmer
 │           ├── ts0001_switch_TZ3000_tqlv4ug4.py      # TS0001 single switch
 │           ├── ts0502b_cct_TZ3000_yeygk4hw.py         # TS0502B CCT dimmable light
@@ -456,6 +484,7 @@ from zhaquirks.tuya.builder import TuyaQuirkBuilder
 | Simon i7 quirk | v3 | AllOnOff virtual endpoint |
 | Simon SM0502 quirk | v5 | Min/max brightness split + AllOnOff |
 | TS0502B CCT quirk | v1 | Kelvin↔mireds conversion + CCT-only fix |
+| SM0301 curtain quirk | v1 | Phantom EP removal + entity cleanup |
 | Ceiling fan quirk | v5 | 6-speed + direction + preset |
 | SPI LED quirk | v9 | Batch queue + correct scene format |
 | Screen switch quirk | v2 | Screen label write support |

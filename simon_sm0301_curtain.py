@@ -65,13 +65,17 @@ Quirk fixes:
   6. Expose "Start Calibration" / "End Calibration" buttons (attr 0x0011)
 """
 
-from typing import Final
+import asyncio
+import logging
+from typing import Any, Final
 
 import zigpy.types as t
 from zigpy.quirks import CustomCluster
 from zigpy.quirks.v2 import EntityType, QuirkBuilder
 from zigpy.zcl.clusters.closures import Shade as ShadeConfiguration
 from zigpy.zcl.foundation import ZCLAttributeDef
+
+_LOGGER = logging.getLogger(__name__)
 
 ONOFF = 0x0006
 LEVEL = 0x0008
@@ -96,6 +100,42 @@ class TuyaShadeConfigCluster(CustomCluster, ShadeConfiguration):
             type=t.enum8,
             access="rw",
         )
+
+    async def write_attributes(
+        self,
+        attributes: dict[str | int, Any],
+        manufacturer: int | None = None,
+        **kwargs,
+    ) -> list:
+        """Auto-read closed_limit after calibration ends (calibration_mode→0)."""
+        result = await super().write_attributes(attributes, manufacturer, **kwargs)
+
+        # Detect calibration_mode = 0 (end calibration)
+        for attr, value in attributes.items():
+            attr_id = self.find_attribute(attr).id if not isinstance(attr, int) else attr
+            if attr_id == 0x0011 and int(value) == 0:
+                # Schedule a delayed read so device has time to finalize
+                asyncio.ensure_future(self._read_closed_limit_after_calibration())
+                break
+
+        return result
+
+    async def _read_closed_limit_after_calibration(self) -> None:
+        """Read closed_limit from device after calibration completes."""
+        await asyncio.sleep(2)
+        success, failure = await self.read_attributes(
+            [self.AttributeDefs.closed_limit.id],
+        )
+        if self.AttributeDefs.closed_limit.id in success:
+            _LOGGER.info(
+                "SM0301 calibration done, closed_limit=%s",
+                success[self.AttributeDefs.closed_limit.id],
+            )
+        else:
+            _LOGGER.warning(
+                "SM0301 failed to read closed_limit after calibration: %s",
+                failure,
+            )
 
 
 # ────────────────────────────────────────────────────────────────

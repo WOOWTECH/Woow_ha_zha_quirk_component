@@ -14,17 +14,21 @@ OnOff + LevelControl clusters for cover open/close/position.
 Endpoint structure (original):
   EP1-EP4: profile=0x0104, device_type=0x0200 (SHADE)
   Each EP has: Basic, Identify, Groups, Scenes, OnOff, LevelControl,
-  WindowCovering (0x0100), and Tuya private clusters (0xFC55-FC57).
+  Shade Configuration (0x0100), and Tuya private clusters (0xFC55-FC57).
 
 Problem: The device reports 4 identical endpoints but it is a
 single-channel curtain controller. Only EP1 is functional.
 This creates 22 entities (4 covers, 4 binary_sensors, 4 numbers,
 4 selects, 4 firmware updates, 1 identify, 1 RSSI/LQI) when only
-~4 are needed.
+~5 are needed.
 
-Calibration: Travel time is set by pressing the device "Next" button
-twice; the interval between presses defines the travel time.
-Tuya DP3 (cur_calibration: start/end) can also trigger calibration.
+Calibration:
+  Physical: Press the device "Next" button twice; the interval between
+  presses defines the travel time.
+  ZCL: The calibrated travel distance is stored in the Shade
+  Configuration cluster (0x0100) attribute closed_limit (0x0010) as a
+  uint16 value representing motor steps (e.g. 17800).  Writing this
+  attribute adjusts the travel limit without re-calibrating physically.
 
 Tuya DP map (cloud):
   DP1   - control         - Enum (open/stop/close)  → mapped to OnOff
@@ -36,14 +40,17 @@ Tuya DP map (cloud):
 
 Quirk fixes:
   1. Remove phantom endpoints EP2-EP4 (only EP1 is real)
-  2. Suppress useless OnOff config entities (StartUpOnOff, binary_sensor)
+  2. Suppress useless OnOff config entities (StartUpOnOff)
   3. Suppress useless LevelControl config entities (start_up_current_level)
+  4. Expose Shade closed_limit as a Number entity for travel calibration
 """
 
 from zigpy.quirks.v2 import QuirkBuilder
+from zigpy.quirks.v2 import EntityType
 
 ONOFF = 0x0006
 LEVEL = 0x0008
+SHADE = 0x0100
 
 # ────────────────────────────────────────────────────────────────
 # SM0301 — 1-channel curtain controller (_TYZB01_koulgwmy)
@@ -63,6 +70,18 @@ LEVEL = 0x0008
     .prevent_default_entity_creation(
         endpoint_id=1, cluster_id=LEVEL,
         unique_id_suffix="start_up_current_level",
+    )
+    # ── Expose Shade closed_limit for travel calibration ──
+    .number(
+        attribute_name="closed_limit",
+        cluster_id=SHADE,
+        endpoint_id=1,
+        min_value=100,
+        max_value=65534,
+        step=100,
+        entity_type=EntityType.CONFIG,
+        translation_key="closed_limit",
+        fallback_name="Travel Limit",
     )
     .skip_configuration()
     .add_to_registry()

@@ -24,8 +24,8 @@
   <img src="https://img.shields.io/badge/Python-3.12+-yellow?logo=python" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/HACS-Compatible-green?logo=homeassistantcommunitystore" alt="HACS Compatible" />
   <img src="https://img.shields.io/badge/License-MIT-red" alt="MIT License" />
-  <img src="https://img.shields.io/badge/Quirks-12%20files-blue" alt="12 Quirk Files" />
-  <img src="https://img.shields.io/badge/Devices-14%20models-brightgreen" alt="14 Device Models" />
+  <img src="https://img.shields.io/badge/Quirks-13%20files-blue" alt="13 Quirk Files" />
+  <img src="https://img.shields.io/badge/Devices-15%20models-brightgreen" alt="15 Device Models" />
 </p>
 
 <p align="center">
@@ -53,11 +53,12 @@
 | 7 | Tuya TS0601 Roller Shade | Roller Shade Motor | `_TZE284_qxjkdfyt` | `cover` | Motor direction, limit switches, motor mode |
 | 8 | Tuya TS0601 Ceiling Fan | Ceiling Fan + Light | `_TZE200_hmgktzj2` | `fan` + `light` + `select` | 6-speed fan, 3 presets, direction control, 3-level color temp |
 | 9 | Gledopto GL-SPI-206P | SPI LED Controller | `_TZE284_gt5al3bl` | `light` + `select` | RGBCW color, 16 scene effects, pixel count, chip type config |
-| 10 | Zemismart 4-Gang Screen Switch | 4-Gang Touch Switch | `_TZE204_wwaeqnrf` | `switch` | Screen label write, countdown timer, child lock, LED colors |
+| 10 | Zemismart 4-Gang Screen Switch | 4-Gang Touch Switch | `_TZE204_wwaeqnrf` | `switch` | Screen label auto-sync, countdown timer, child lock, LED colors |
 | 11 | Tuya Curtain Track | Curtain Track Motor | `_TZE200_nogaemzt` | `cover` | Motor direction, limit switches, motor mode |
 | 12 | Simon SM0502 | 2-Gang Dimmer Switch | `_TZ2000_qc1ntn3c` | `light` + `number` | Min/max brightness split, All On/Off virtual endpoint, indicator LED |
 | 13 | Tuya TS0502B | CCT Dimmable Light | `_TZ3000_yeygk4hw` | `light` | Kelvin↔mireds auto-conversion, CCT-only mode fix (2500-6500K) |
-| 14 | Simon SM0301 | 1-CH Curtain Controller | `_TYZB01_koulgwmy` | `cover` + `number` | Phantom EP2-4 removal, forward/reverse output, position control, travel limit calibration |
+| 14 | Simon SM0301 | 1-CH Curtain Controller | `_TYZB01_koulgwmy` | `cover` + `number` + `button` | Phantom EP2-4 removal, position control, travel limit calibration, ZCL start/end calibration buttons |
+| 15 | Tuya 3-Gang Screen Switch | 3-Gang Touch Switch | `_TZE204_k7v0eqke` | `switch` | Screen label auto-sync, countdown timer, child lock, LED colors |
 
 ---
 
@@ -134,6 +135,9 @@ The device stores color temperature in Kelvin but ZCL expects mireds (1,000,000 
 | Cover | 0x0006 + 0x0008 | `on_off` + `current_level` | Standard (cover) | Open/close/stop/set_position, device_class=shade |
 | Opening State | 0x0006 | `on_off` | binary_sensor | Indicates if curtain is currently moving |
 | Travel Limit | 0x0100 | `closed_limit` (0x0010) | Config (number) | Motor travel distance in steps (100-65534, step 100) |
+| Reset Travel Limit | 0x0100 | `closed_limit` = 65534 | Config (button) | Removes travel restriction (writes max value) |
+| Start Calibration | 0x0100 | `calibration_mode` (0x0011) = 1 | Config (button) | Enters configure/calibration mode |
+| End Calibration | 0x0100 | `calibration_mode` (0x0011) = 0 | Config (button) | Exits calibration mode, saves closed_limit |
 
 **Tuya Cloud DP Map (for reference):**
 
@@ -146,9 +150,16 @@ The device stores color temperature in Kelvin but ZCL expects mireds (1,000,000 
 | 14 | Indicator LED | `light_mode` | Enum | none, enable_white, enable_yellow |
 | 101 | Backlight Number | `backlight_num` | Value | 50000-60000 |
 
-**Calibration:**
-- **Physical:** Press device "Next" button twice; the interval defines travel time.
-- **ZCL:** The travel distance is stored in Shade Configuration cluster (0x0100) attribute `closed_limit` (0x0010) as motor steps. Adjust the Travel Limit number entity to fine-tune without physical recalibration.
+**ZCL Calibration Workflow:**
+
+This device has NO physical calibration button. Calibration is done entirely over ZCL using Shade Configuration attribute 0x0011 (an undocumented enum8):
+
+1. Press **Start Calibration** button (writes attr 0x0011 = 1) — device enters configure mode
+2. Open the cover to the desired fully-open position, then stop — device records the zero point
+3. Close the cover to the desired fully-closed position, then stop — device measures motor steps
+4. Press **End Calibration** button (writes attr 0x0011 = 0) — device saves the new closed_limit
+
+The Travel Limit number entity shows the recorded motor steps and can also be written directly to fine-tune without full recalibration. The **Reset Travel Limit** button writes closed_limit=65534 to remove any travel restriction.
 
 ---
 
@@ -266,9 +277,13 @@ WLED-style light entity with deferred DP batch queue (15ms window) for single-fr
 | 102 | VALUE | `backlight_level` | Config | Backlight brightness (0-100%) |
 | 103 | ENUM | `on_color` | Config | ON indicator color (7 colors) |
 | 104 | ENUM | `off_color` | Config | OFF indicator color (7 colors) |
-| 105-108 | RAW | `screen_label_1` - `screen_label_4` | Write-only | Screen text (UTF-8, 12-char max) |
+| 105-108 | RAW | `screen_label_1` - `screen_label_4` | Write-only | Screen text (UTF-8, 12-char max, auto-synced) |
 
-**Screen Label Write Example:**
+**Screen Label Auto-Sync:**
+
+Screen labels are automatically synced from HA entity `friendly_name` on device startup and whenever an entity is renamed. No external automation needed — the sync logic is built into the quirk cluster itself.
+
+Manual write is also supported:
 
 ```yaml
 service: zha.set_zigbee_cluster_attribute
@@ -280,6 +295,28 @@ data:
   attribute: screen_label_1
   value: "Living Room"
 ```
+
+---
+
+### Tuya 3-Gang Screen Switch (`_TZE204_k7v0eqke`)
+
+Same MCU firmware as the 4-gang `_TZE204_wwaeqnrf` but with 3 physical gangs. DP 4/10/32/108 are phantom (MCU accepts but no physical hardware).
+
+| DP | Type | Attribute | Entity Type | Description |
+|----|------|-----------|-------------|-------------|
+| 1-3 | BOOL | `on_off_1` - `on_off_3` | Standard | Switch 1-3 on/off |
+| 13 | BOOL | `on_off_all` | Standard | All switches on/off |
+| 7-9 | VALUE | `countdown_1` - `countdown_3` | Config | Countdown timer (0-86400 sec) |
+| 15 | ENUM | `indicator_mode` | Config | Off (0) / Relay (1) / Position (2) |
+| 16 | BOOL | `backlight_switch` | Config | Backlight master switch |
+| 29-31 | ENUM | `power_on_state_1` - `power_on_state_3` | Config | Off (0) / On (1) / Memory (2) |
+| 101 | BOOL | `child_lock` | Config | Child lock toggle |
+| 102 | VALUE | `backlight_level` | Config | Backlight brightness (0-100%) |
+| 103 | ENUM | `on_color` | Config | ON indicator color (7 colors) |
+| 104 | ENUM | `off_color` | Config | OFF indicator color (7 colors) |
+| 105-107 | RAW | `screen_label_1` - `screen_label_3` | Write-only | Screen text (UTF-8, 12-char max, auto-synced) |
+
+Screen label auto-sync behavior is identical to the 4-gang version above.
 
 ---
 
@@ -382,7 +419,7 @@ config/
             ├── __init__.py
             ├── simon_i7_s2100.py
             ├── ts0001_switch_TZ3000_tqlv4ug4.py
-            └── ... (11 more quirk files)
+            └── ... (12 more quirk files)
 ```
 
 3. Add `woow_zha_quirks:` to `configuration.yaml`
@@ -433,6 +470,7 @@ Woow_ha_zha_quirk_component/
 │           ├── ts0601_fan_TZE200_hmgktzj2.py         # Ceiling fan + light
 │           ├── ts0601_light_TZE284_gt5al3bl.py       # SPI LED controller
 │           ├── ts0601_switch_TZE204_wwaeqnrf.py      # 4-gang screen switch
+│           ├── ts0601_switch_TZE204_k7v0eqke.py      # 3-gang screen switch
 │           └── tuya_cover_nogaemzt.py                # Curtain track motor
 │
 ├── config/
@@ -487,10 +525,11 @@ from zhaquirks.tuya.builder import TuyaQuirkBuilder
 | Simon i7 quirk | v3 | AllOnOff virtual endpoint |
 | Simon SM0502 quirk | v5 | Min/max brightness split + AllOnOff |
 | TS0502B CCT quirk | v1 | Kelvin↔mireds conversion + CCT-only fix |
-| SM0301 curtain quirk | v2 | Phantom EP removal + travel limit calibration |
+| SM0301 curtain quirk | v3 | Phantom EP removal + travel limit + ZCL calibration buttons |
 | Ceiling fan quirk | v5 | 6-speed + direction + preset |
 | SPI LED quirk | v9 | Batch queue + correct scene format |
-| Screen switch quirk | v2 | Screen label write support |
+| 4-gang screen switch quirk | v3 | Screen label auto-sync from entity names |
+| 3-gang screen switch quirk | v1 | 3-gang variant with screen label auto-sync |
 
 ---
 

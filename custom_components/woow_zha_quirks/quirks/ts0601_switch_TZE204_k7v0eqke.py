@@ -1,29 +1,26 @@
-"""ZHA Quirk (v2) for Zemismart ZMS-206US-4 (_TZE204_wwaeqnrf / TS0601)
+"""ZHA Quirk (v2) for Tuya 3-Gang Screen Switch (_TZE204_k7v0eqke / TS0601)
 
-4-Gang Zigbee Smart Screen Switch with full feature support.
-All settings exposed as native HA entities via TuyaQuirkBuilder.
+3-Gang Zigbee Smart Screen Switch with full feature support.
+Uses the same MCU firmware as the 4-gang _TZE204_wwaeqnrf but with
+only 3 physical gangs connected.  DP 4/10/32/108 are phantom (MCU
+accepts them but no physical relay/screen).
 
-Verified DP Map (tested 2026-04-23 via zha-toolkit):
-  DP  1-4   : Switch 1-4 on/off          (bool)
-  DP  13    : All switches on/off        (bool)
-  DP  7-10  : Countdown timer 1-4        (value, uint32 seconds)
+Verified DP Map (tested 2026-06-08 via zha-toolkit):
+  DP  1-3   : Switch 1-3 on/off          (bool)
+  DP  13    : All switches on/off        (bool, controls 1-3 only)
+  DP  7-9   : Countdown timer 1-3        (value, uint32 seconds)
   DP  15    : Indicator LED mode          (enum: 0=off, 1=relay, 2=position)
   DP  16    : Backlight master switch     (bool)
-  DP  29-32 : Relay power-on state 1-4   (enum: 0=off, 1=on, 2=memory)
+  DP  29-31 : Relay power-on state 1-3   (enum: 0=off, 1=on, 2=memory)
   DP  101   : Child lock                  (bool)
   DP  102   : Backlight brightness        (value, 0-100%)
   DP  103   : ON indicator color          (enum: 0-6)
   DP  104   : OFF indicator color         (enum: 0-6)
-  DP  105-108: Switch 1-4 screen label    (raw/string, write-only, 12-char max)
+  DP  105-107: Switch 1-3 screen label    (raw/string, write-only, 12-char max)
 
-Screen labels (DP105-108):
-  These are write-only DPs that set the text displayed on each gang's
-  screen. They use RAW DP type (0x00) with UTF-8 encoded bytes.
-
-  Auto-sync: Screen labels are automatically synced from the HA entity
-  friendly_name on HA startup and whenever an entity is renamed.
-  This is handled entirely within the quirk — no external automation
-  needed.
+Screen labels (DP105-107):
+  Auto-sync from HA entity friendly_name on startup and entity rename.
+  No external automation needed.
 
 Device Signature (from scan_device):
   Endpoint 1:
@@ -45,7 +42,6 @@ import zigpy.types as t
 from zigpy.quirks.v2 import EntityType
 from zigpy.zcl import foundation
 from zhaquirks.tuya import (
-    TUYA_MCU_COMMAND,
     TuyaCommand,
     TuyaData,
     TuyaDatapointData,
@@ -58,20 +54,16 @@ _LOGGER = logging.getLogger(__name__)
 
 
 # ────────────────────────────────────────────────────────────────
-# Custom Enums
+# Custom Enums (shared with 4-gang)
 # ────────────────────────────────────────────────────────────────
 
 class IndicatorMode(t.enum8):
-    """Indicator LED mode."""
-
     Off = 0x00
     Relay = 0x01
     Position = 0x02
 
 
 class LEDColor(t.enum8):
-    """LED indicator color."""
-
     Red = 0x00
     Blue = 0x01
     Green = 0x02
@@ -82,19 +74,13 @@ class LEDColor(t.enum8):
 
 
 class PowerOnState(t.enum8):
-    """Power-on state after power loss."""
-
     Off = 0x00
     On = 0x01
     Memory = 0x02
 
 
 def _str_to_raw_tuya(value) -> TuyaData:
-    """Convert a string to TuyaData with RAW type (UTF-8 encoded bytes).
-
-    The device MCU expects RAW (0x00) DP type for screen labels,
-    not STRING (0x03). Limited to 12 characters.
-    """
+    """Convert a string to TuyaData with RAW type (UTF-8 encoded bytes)."""
     td = TuyaData()
     td.dp_type = TuyaDPType.RAW
     if isinstance(value, str):
@@ -106,47 +92,27 @@ def _str_to_raw_tuya(value) -> TuyaData:
     return td
 
 
-# Screen label attribute name → DP ID mapping
+# ────────────────────────────────────────────────────────────────
+# DP mappings (3-gang specific)
+# ────────────────────────────────────────────────────────────────
+
 _SCREEN_LABEL_DPS: dict[str, int] = {
     "screen_label_1": 105,
     "screen_label_2": 106,
     "screen_label_3": 107,
-    "screen_label_4": 108,
 }
 
-# Switch DP → Screen label DP mapping (for auto-sync)
-# Key: switch on_off DP id, Value: screen label DP id
-_SWITCH_DP_TO_LABEL_DP: dict[int, int] = {
-    1: 105,
-    2: 106,
-    3: 107,
-    4: 108,
-}
-
-# Reverse: switch attribute_name → label attribute_name
 _SWITCH_ATTR_TO_LABEL_ATTR: dict[str, str] = {
     "on_off_1": "screen_label_1",
     "on_off_2": "screen_label_2",
     "on_off_3": "screen_label_3",
-    "on_off_4": "screen_label_4",
 }
 
-
-# Module-level set to ensure auto-sync triggers only once per device IEEE
-# (survives cluster object recreation across HA internal restarts)
 _SYNC_TRIGGERED_IEES: set[str] = set()
 
 
 def _get_hass(cluster: Any) -> Any | None:
-    """Extract the HA ``hass`` object from a zigpy cluster.
-
-    Traverses the internal ZHA listener chain:
-      cluster → application → Gateway (listener) →
-      ZHAGatewayProxy (global_listener) → hass
-
-    Returns ``None`` if the chain is broken (e.g. during unit tests or
-    if ZHA internals change).
-    """
+    """Extract the HA hass object from a zigpy cluster via ZHA internals."""
     try:
         app = cluster.endpoint.device.application
         for _lid, (listener, _inc_ctx) in app._listeners.items():
@@ -164,26 +130,19 @@ def _get_hass(cluster: Any) -> Any | None:
     return None
 
 
-class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
+# ────────────────────────────────────────────────────────────────
+# Custom MCU Cluster with screen label write + auto-sync
+# ────────────────────────────────────────────────────────────────
+
+class ThreeGangScreenLabelCluster(TuyaMCUCluster):
     """TuyaMCU cluster with screen-label write support and auto-sync.
 
-    Features:
-      1. Direct string DP writes for screen_label_* attributes
-         (bypasses TuyaClusterData which only supports int values).
-      2. Auto-sync: on HA startup and entity rename, reads each switch
-         entity's friendly_name and writes it to the matching screen
-         label DP.  No external automation needed.
-
-    Subclass contract (for multi-device universal support):
-      Override ``SWITCH_DP_TO_LABEL_DP`` with the device-specific mapping
-      of switch DP → screen label DP.
+    3-gang version: syncs friendly_name → screen_label for 3 switches.
     """
 
-    # --- Override these in subclasses for different devices ---
-    SWITCH_DP_TO_LABEL_DP: dict[int, int] = _SWITCH_DP_TO_LABEL_DP
     SWITCH_ATTR_TO_LABEL_ATTR: dict[str, str] = _SWITCH_ATTR_TO_LABEL_ATTR
 
-    _sync_unsub: Any | None = None  # event listener unsubscribe handle
+    _sync_unsub: Any | None = None
 
     # ── String DP write support ───────────────────────────────────
 
@@ -191,7 +150,6 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
         """Handle string-type screen label attributes directly."""
         regular_attrs = {}
         for attr_name, value in attributes.items():
-            # Resolve int attr IDs to names
             if isinstance(attr_name, int):
                 attr_def = self.attributes.get(attr_name)
                 name = attr_def.name if attr_def else None
@@ -238,18 +196,15 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
         return result
 
     async def _setup_auto_sync(self) -> None:
-        """Wait for HA to be ready, do initial sync, subscribe to renames."""
-        await asyncio.sleep(10)  # let HA + ZHA finish entity setup
+        await asyncio.sleep(10)
 
         hass = _get_hass(self)
         if hass is None:
             _LOGGER.warning("Screen label auto-sync: cannot reach hass")
             return
 
-        # Initial sync
         await self._sync_labels_from_registry(hass)
 
-        # Subscribe to entity_registry_updated for live rename sync
         if self._sync_unsub is None:
             self._sync_unsub = hass.bus.async_listen(
                 "entity_registry_updated", self._on_entity_registry_updated,
@@ -257,7 +212,6 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
             _LOGGER.info("Screen label auto-sync: listener registered")
 
     async def _on_entity_registry_updated(self, event: Any) -> None:
-        """Handle entity rename events."""
         if event.data.get("action") != "update":
             return
         changes = event.data.get("changes", {})
@@ -268,12 +222,11 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
         if hass is None:
             return
 
-        from homeassistant.helpers import (  # noqa: E402
+        from homeassistant.helpers import (
             device_registry as dr_mod,
             entity_registry as er_mod,
         )
 
-        # Check if the changed entity belongs to this device
         entity_id = event.data.get("entity_id", "")
         ent_reg = er_mod.async_get(hass)
         entry = ent_reg.async_get(entity_id)
@@ -286,7 +239,6 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
         if device_entry is None:
             return
 
-        # Check if any identifier matches our IEEE
         is_our_device = any(
             device_ieee in str(ident)
             for _domain, ident in device_entry.identifiers
@@ -295,12 +247,11 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
             return
 
         _LOGGER.info("Screen label auto-sync: entity renamed %s", entity_id)
-        await asyncio.sleep(1)  # brief settle
+        await asyncio.sleep(1)
         await self._sync_labels_from_registry(hass)
 
     async def _sync_labels_from_registry(self, hass: Any) -> None:
-        """Read switch entity friendly_names and write to screen labels."""
-        from homeassistant.helpers import (  # noqa: E402
+        from homeassistant.helpers import (
             device_registry as dr_mod,
             entity_registry as er_mod,
         )
@@ -314,7 +265,6 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
 
         device_ieee = str(self.endpoint.device.ieee)
 
-        # Find our device in the HA device registry
         our_device_id = None
         for dev in dev_reg.devices.values():
             for _domain, ident in dev.identifiers:
@@ -329,22 +279,15 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
                             device_ieee)
             return
 
-        # Build unique_id → friendly_name map for switch entities on this device
         switch_names: dict[str, str] = {}
         for entry in ent_reg.entities.values():
             if entry.device_id != our_device_id:
                 continue
             if not entry.entity_id.startswith("switch."):
                 continue
-            # Display name priority: custom name > original_name > entity_id
             name = entry.name or entry.original_name or entry.entity_id
             switch_names[entry.unique_id] = name
 
-        _LOGGER.debug("Screen label sync: found %d switch entities for %s",
-                      len(switch_names), device_ieee)
-
-        # Match switch entities to labels via unique_id suffix pattern
-        # ZHA unique_ids for Tuya switches end with e.g. "...61184_on_off_1"
         synced = 0
         for switch_attr, label_attr in self.SWITCH_ATTR_TO_LABEL_ATTR.items():
             friendly = None
@@ -354,8 +297,6 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
                     break
 
             if friendly is None:
-                _LOGGER.debug("Screen label sync: no entity found for %s",
-                              switch_attr)
                 continue
 
             label_dp = _SCREEN_LABEL_DPS.get(label_attr)
@@ -380,8 +321,8 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
 # ────────────────────────────────────────────────────────────────
 
 (
-    TuyaQuirkBuilder("_TZE204_wwaeqnrf", "TS0601")
-    # ── 4 main switches (DP 1-4) ─────────────────────────────
+    TuyaQuirkBuilder("_TZE204_k7v0eqke", "TS0601")
+    # ── 3 main switches (DP 1-3) ─────────────────────────────
     .tuya_switch(
         dp_id=1,
         attribute_name="on_off_1",
@@ -403,13 +344,6 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
         translation_key="on_off_3",
         fallback_name="Switch 3",
     )
-    .tuya_switch(
-        dp_id=4,
-        attribute_name="on_off_4",
-        entity_type=EntityType.STANDARD,
-        translation_key="on_off_4",
-        fallback_name="Switch 4",
-    )
     # ── All on/off (DP 13) → Switch entity ─────────────────
     .tuya_switch(
         dp_id=13,
@@ -418,7 +352,7 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
         translation_key="on_off_all",
         fallback_name="All On/Off",
     )
-    # ── Countdown timers (DP 7-10) → Number entities ─────────
+    # ── Countdown timers (DP 7-9) → Number entities ─────────
     .tuya_number(
         dp_id=7,
         attribute_name="countdown_1",
@@ -452,17 +386,6 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
         translation_key="countdown_3",
         fallback_name="Countdown 3",
     )
-    .tuya_number(
-        dp_id=10,
-        attribute_name="countdown_4",
-        type=t.uint32_t,
-        min_value=0,
-        max_value=86400,
-        step=1,
-        entity_type=EntityType.CONFIG,
-        translation_key="countdown_4",
-        fallback_name="Countdown 4",
-    )
     # ── Indicator LED mode (DP 15) → Select entity ───────────
     .tuya_enum(
         dp_id=15,
@@ -480,7 +403,7 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
         translation_key="backlight_switch",
         fallback_name="Backlight",
     )
-    # ── Power-on states (DP 29-32) → Select entities ─────────
+    # ── Power-on states (DP 29-31) → Select entities ─────────
     .tuya_enum(
         dp_id=29,
         attribute_name="power_on_state_1",
@@ -504,14 +427,6 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
         entity_type=EntityType.CONFIG,
         translation_key="power_on_state_3",
         fallback_name="Power On State 3",
-    )
-    .tuya_enum(
-        dp_id=32,
-        attribute_name="power_on_state_4",
-        enum_class=PowerOnState,
-        entity_type=EntityType.CONFIG,
-        translation_key="power_on_state_4",
-        fallback_name="Power On State 4",
     )
     # ── Child lock (DP 101) → Switch entity ───────────────────
     .tuya_switch(
@@ -550,10 +465,7 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
         translation_key="off_color",
         fallback_name="OFF Indicator Color",
     )
-    # ── Screen labels (DP 105-108) — write-only string DPs ──
-    # Registered as writable attributes with RAW-type dp_converter.
-    # No HA entity (ZHA has no text platform), but writable via
-    # zha.set_zigbee_cluster_attribute or zha_toolkit.
+    # ── Screen labels (DP 105-107) — write-only string DPs ──
     .tuya_dp_attribute(
         dp_id=105,
         attribute_name="screen_label_1",
@@ -575,13 +487,6 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
         access=foundation.ZCLAttributeAccess.Read | foundation.ZCLAttributeAccess.Write,
         dp_converter=_str_to_raw_tuya,
     )
-    .tuya_dp_attribute(
-        dp_id=108,
-        attribute_name="screen_label_4",
-        type=t.CharacterString,
-        access=foundation.ZCLAttributeAccess.Read | foundation.ZCLAttributeAccess.Write,
-        dp_converter=_str_to_raw_tuya,
-    )
     .skip_configuration()
-    .add_to_registry(replacement_cluster=ScreenLabelTuyaMCUCluster)
+    .add_to_registry(replacement_cluster=ThreeGangScreenLabelCluster)
 )

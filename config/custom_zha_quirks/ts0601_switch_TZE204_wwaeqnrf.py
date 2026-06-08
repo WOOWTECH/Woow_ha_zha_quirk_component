@@ -19,17 +19,11 @@ Verified DP Map (tested 2026-04-23 via zha-toolkit):
 Screen labels (DP105-108):
   These are write-only DPs that set the text displayed on each gang's
   screen. They use RAW DP type (0x00) with UTF-8 encoded bytes.
-  Since ZHA has no text entity platform, these are registered as
-  writable attributes only. Use zha_toolkit or HA developer tools
-  to write values:
-    service: zha.set_zigbee_cluster_attribute
-    data:
-      ieee: <device_ieee>
-      endpoint_id: 1
-      cluster_id: 0xEF00
-      cluster_type: in
-      attribute: screen_label_1
-      value: "客廳"
+
+  Auto-sync: Screen labels are automatically synced from the HA entity
+  friendly_name on HA startup and whenever an entity is renamed.
+  This is handled entirely within the quirk — no external automation
+  needed.
 
 Device Signature (from scan_device):
   Endpoint 1:
@@ -41,7 +35,11 @@ Device Signature (from scan_device):
     Output: [0x0021 GreenPower]
 """
 
+from __future__ import annotations
+
+import asyncio
 import logging
+from typing import Any
 
 import zigpy.types as t
 from zigpy.quirks.v2 import EntityType
@@ -109,20 +107,85 @@ def _str_to_raw_tuya(value) -> TuyaData:
 
 
 # Screen label attribute name → DP ID mapping
-_SCREEN_LABEL_DPS = {
+_SCREEN_LABEL_DPS: dict[str, int] = {
     "screen_label_1": 105,
     "screen_label_2": 106,
     "screen_label_3": 107,
     "screen_label_4": 108,
 }
 
+# Switch DP → Screen label DP mapping (for auto-sync)
+# Key: switch on_off DP id, Value: screen label DP id
+_SWITCH_DP_TO_LABEL_DP: dict[int, int] = {
+    1: 105,
+    2: 106,
+    3: 107,
+    4: 108,
+}
+
+# Reverse: switch attribute_name → label attribute_name
+_SWITCH_ATTR_TO_LABEL_ATTR: dict[str, str] = {
+    "on_off_1": "screen_label_1",
+    "on_off_2": "screen_label_2",
+    "on_off_3": "screen_label_3",
+    "on_off_4": "screen_label_4",
+}
+
+
+# Module-level set to ensure auto-sync triggers only once per device IEEE
+# (survives cluster object recreation across HA internal restarts)
+_SYNC_TRIGGERED_IEES: set[str] = set()
+
+
+def _get_hass(cluster: Any) -> Any | None:
+    """Extract the HA ``hass`` object from a zigpy cluster.
+
+    Traverses the internal ZHA listener chain:
+      cluster → application → Gateway (listener) →
+      ZHAGatewayProxy (global_listener) → hass
+
+    Returns ``None`` if the chain is broken (e.g. during unit tests or
+    if ZHA internals change).
+    """
+    try:
+        app = cluster.endpoint.device.application
+        for _lid, (listener, _inc_ctx) in app._listeners.items():
+            if not hasattr(listener, "application_controller"):
+                continue
+            for gl in getattr(listener, "_global_listeners", []):
+                cb = getattr(gl, "callback", None)
+                if cb is None:
+                    continue
+                proxy = getattr(cb, "__self__", None)
+                if proxy is not None and hasattr(proxy, "hass"):
+                    return proxy.hass
+    except (AttributeError, RuntimeError, TypeError):
+        pass
+    return None
+
 
 class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
-    """TuyaMCU cluster with direct string DP write support.
+    """TuyaMCU cluster with screen-label write support and auto-sync.
 
-    Overrides write_attributes to handle screen_label_* attributes
-    directly, bypassing TuyaClusterData (which only supports int values).
+    Features:
+      1. Direct string DP writes for screen_label_* attributes
+         (bypasses TuyaClusterData which only supports int values).
+      2. Auto-sync: on HA startup and entity rename, reads each switch
+         entity's friendly_name and writes it to the matching screen
+         label DP.  No external automation needed.
+
+    Subclass contract (for multi-device universal support):
+      Override ``SWITCH_DP_TO_LABEL_DP`` with the device-specific mapping
+      of switch DP → screen label DP.
     """
+
+    # --- Override these in subclasses for different devices ---
+    SWITCH_DP_TO_LABEL_DP: dict[int, int] = _SWITCH_DP_TO_LABEL_DP
+    SWITCH_ATTR_TO_LABEL_ATTR: dict[str, str] = _SWITCH_ATTR_TO_LABEL_ATTR
+
+    _sync_unsub: Any | None = None  # event listener unsubscribe handle
+
+    # ── String DP write support ───────────────────────────────────
 
     async def write_attributes(self, attributes, manufacturer=None, **kwargs):
         """Handle string-type screen label attributes directly."""
@@ -136,7 +199,6 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
                 name = attr_name
 
             if name in _SCREEN_LABEL_DPS:
-                # Send directly as Tuya DP command, bypassing TuyaClusterData
                 dp_id = _SCREEN_LABEL_DPS[name]
                 tuya_data = _str_to_raw_tuya(value)
                 dpd = TuyaDatapointData(dp=dp_id, data=tuya_data)
@@ -146,12 +208,9 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
                     datapoints=[dpd],
                 )
                 await self.command(0x00, cmd)
-                # Update local cache
                 attr_id = self.attributes_by_name[name].id
                 self._update_attribute(attr_id, value)
-                _LOGGER.debug(
-                    "Screen label DP%d written: %s", dp_id, value,
-                )
+                _LOGGER.debug("Screen label DP%d written: %s", dp_id, value)
             else:
                 regular_attrs[attr_name] = value
 
@@ -160,6 +219,160 @@ class ScreenLabelTuyaMCUCluster(TuyaMCUCluster):
                 regular_attrs, manufacturer=manufacturer, **kwargs
             )
         return [[foundation.WriteAttributesStatusRecord(foundation.Status.SUCCESS)]]
+
+    # ── Auto-sync: friendly_name → screen label ──────────────────
+
+    def handle_cluster_request(self, hdr, args, *, dst_addressing=None):
+        """Trigger auto-sync on first incoming message from the device."""
+        result = super().handle_cluster_request(
+            hdr, args, dst_addressing=dst_addressing,
+        )
+        ieee = str(self.endpoint.device.ieee)
+        if ieee not in _SYNC_TRIGGERED_IEES:
+            _SYNC_TRIGGERED_IEES.add(ieee)
+            _LOGGER.info(
+                "Screen label auto-sync: first message from %s, starting sync",
+                ieee,
+            )
+            self.create_catching_task(self._setup_auto_sync())
+        return result
+
+    async def _setup_auto_sync(self) -> None:
+        """Wait for HA to be ready, do initial sync, subscribe to renames."""
+        await asyncio.sleep(10)  # let HA + ZHA finish entity setup
+
+        hass = _get_hass(self)
+        if hass is None:
+            _LOGGER.warning("Screen label auto-sync: cannot reach hass")
+            return
+
+        # Initial sync
+        await self._sync_labels_from_registry(hass)
+
+        # Subscribe to entity_registry_updated for live rename sync
+        if self._sync_unsub is None:
+            self._sync_unsub = hass.bus.async_listen(
+                "entity_registry_updated", self._on_entity_registry_updated,
+            )
+            _LOGGER.info("Screen label auto-sync: listener registered")
+
+    async def _on_entity_registry_updated(self, event: Any) -> None:
+        """Handle entity rename events."""
+        if event.data.get("action") != "update":
+            return
+        changes = event.data.get("changes", {})
+        if "name" not in changes and "original_name" not in changes:
+            return
+
+        hass = _get_hass(self)
+        if hass is None:
+            return
+
+        from homeassistant.helpers import (  # noqa: E402
+            device_registry as dr_mod,
+            entity_registry as er_mod,
+        )
+
+        # Check if the changed entity belongs to this device
+        entity_id = event.data.get("entity_id", "")
+        ent_reg = er_mod.async_get(hass)
+        entry = ent_reg.async_get(entity_id)
+        if entry is None or entry.device_id is None:
+            return
+
+        device_ieee = str(self.endpoint.device.ieee)
+        dev_reg = dr_mod.async_get(hass)
+        device_entry = dev_reg.async_get(entry.device_id)
+        if device_entry is None:
+            return
+
+        # Check if any identifier matches our IEEE
+        is_our_device = any(
+            device_ieee in str(ident)
+            for _domain, ident in device_entry.identifiers
+        )
+        if not is_our_device:
+            return
+
+        _LOGGER.info("Screen label auto-sync: entity renamed %s", entity_id)
+        await asyncio.sleep(1)  # brief settle
+        await self._sync_labels_from_registry(hass)
+
+    async def _sync_labels_from_registry(self, hass: Any) -> None:
+        """Read switch entity friendly_names and write to screen labels."""
+        from homeassistant.helpers import (  # noqa: E402
+            device_registry as dr_mod,
+            entity_registry as er_mod,
+        )
+
+        try:
+            ent_reg = er_mod.async_get(hass)
+            dev_reg = dr_mod.async_get(hass)
+        except Exception:
+            _LOGGER.warning("Screen label sync: cannot access registries")
+            return
+
+        device_ieee = str(self.endpoint.device.ieee)
+
+        # Find our device in the HA device registry
+        our_device_id = None
+        for dev in dev_reg.devices.values():
+            for _domain, ident in dev.identifiers:
+                if device_ieee in str(ident):
+                    our_device_id = dev.id
+                    break
+            if our_device_id:
+                break
+
+        if our_device_id is None:
+            _LOGGER.warning("Screen label sync: device %s not in registry",
+                            device_ieee)
+            return
+
+        # Build unique_id → friendly_name map for switch entities on this device
+        switch_names: dict[str, str] = {}
+        for entry in ent_reg.entities.values():
+            if entry.device_id != our_device_id:
+                continue
+            if not entry.entity_id.startswith("switch."):
+                continue
+            # Display name priority: custom name > original_name > entity_id
+            name = entry.name or entry.original_name or entry.entity_id
+            switch_names[entry.unique_id] = name
+
+        _LOGGER.debug("Screen label sync: found %d switch entities for %s",
+                      len(switch_names), device_ieee)
+
+        # Match switch entities to labels via unique_id suffix pattern
+        # ZHA unique_ids for Tuya switches end with e.g. "...61184_on_off_1"
+        synced = 0
+        for switch_attr, label_attr in self.SWITCH_ATTR_TO_LABEL_ATTR.items():
+            friendly = None
+            for uid, name in switch_names.items():
+                if switch_attr in uid:
+                    friendly = name
+                    break
+
+            if friendly is None:
+                _LOGGER.debug("Screen label sync: no entity found for %s",
+                              switch_attr)
+                continue
+
+            label_dp = _SCREEN_LABEL_DPS.get(label_attr)
+            if label_dp is None:
+                continue
+
+            try:
+                await self.write_attributes({label_attr: friendly})
+                synced += 1
+                _LOGGER.info("Screen label sync: %s → DP%d = '%s'",
+                             switch_attr, label_dp, friendly)
+            except Exception as exc:
+                _LOGGER.warning("Screen label sync failed for %s: %s",
+                                label_attr, exc)
+
+        _LOGGER.info("Screen label auto-sync complete: %d/%d labels written",
+                     synced, len(self.SWITCH_ATTR_TO_LABEL_ATTR))
 
 
 # ────────────────────────────────────────────────────────────────

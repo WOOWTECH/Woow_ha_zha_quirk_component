@@ -1,11 +1,29 @@
-"""ZHA Quirk (v9) for Gledopto GL-SPI-206P (_TZE284_gt5al3bl / TS0601)
+"""ZHA Quirk (v11) for Gledopto GL-SPI-206P (_TZE284_gt5al3bl / TS0601)
 
 Tuya Zigbee SPI Addressable LED Strip Controller (幻彩燈控制器).
 Controls RGBCW addressable LED strips (WS2801, WS2811, SK6812, etc.).
 
 WLED-style light entity: exposes a single HA `light.*` entity with
 color wheel (HS), color temperature slider, brightness slider, and
-scene effect dropdown — instead of individual number/select entities.
+scene effects — instead of individual number/select entities.
+
+v11 Scenes as light EFFECTS (not a select):
+  - The 44 scenes are now exposed on the light entity's native "Effect"
+    button (light.effect_list / turn_on(effect=...)) instead of a separate
+    scene `select`. ZHA's light platform hard-codes effect_list to
+    off/colorloop with no quirk hook, so this is done by a guarded runtime
+    monkey-patch of the zha Light class in ../light_effects.py, which calls
+    TuyaSPILightMCUCluster.play_scene(). SCENE_DATA/SCENE_NAMES/ScenePreset
+    are kept (imported by that patch); the DP51 select entity was removed.
+
+v10 Full 44-scene library:
+  - Expanded the scene `select` from 16 to the device's full 44 built-in
+    scenes (the SmartLife app's landscape/Life/festival/Feeling tabs).
+    All 44 raw DP51 payloads were captured live from the app via Tuya-cloud
+    DP51 read-back (docs/woow-product/18-led-strip-scenes.md); the previous
+    16 are a subset and are byte-identical. ScenePreset/SCENE_DATA now hold
+    all 44 (select index 0..43 = app display order); the scene-send path
+    (tuya_mcu_command) and builder are unchanged (already index-generic).
 
 v9 Correct Scene Data Format:
   - Replaced SCENE_DATA payloads with correct format from Zigbee2MQTT
@@ -155,139 +173,125 @@ class ColorOrder(t.enum8):
 
 
 class ScenePreset(t.enum8):
-    Iceland_Blue = 0x00
-    Glacier_Express = 0x01
-    Sea_of_Clouds = 0x02
-    Fireworks_at_Sea = 0x03
-    Firefly_Night = 0x04
-    Grassland = 0x05
-    Northern_Lights = 0x06
-    Late_Autumn = 0x07
-    Game = 0x08
-    Holiday = 0x09
-    Party = 0x0A
-    Trend = 0x0B
-    Meditation = 0x0C
-    Dating = 0x0D
-    Valentines_Day = 0x0E
-    Neon_World = 0x0F
+    """All 44 scenes from the SmartLife app, in the app's display order.
+
+    The enum *value* is the select index (0..43), used as the key into
+    SCENE_DATA; the actual firmware scene_id is byte[1] of each payload.
+    Captured live 2026-07-07 (see docs/woow-product/18-led-strip-scenes.md).
+    """
+
+    # ── "landscape" tab (app page 1) ──
+    Iceland_Blue = 0
+    Glacier_Express = 1
+    Sea_of_Clouds = 2
+    Fireworks_at_Sea = 3
+    Hut_in_the_Snow = 4
+    Firefly_Night = 5
+    Northland = 6
+    Grassland = 7
+    Northern_Lights = 8
+    Late_Autumn = 9
+    Dream_Meteor = 10
+    Early_Spring = 11
+    Spring_Outing = 12
+    Night_Service = 13
+    Wind_Chime = 14
+    City_Lights = 15
+    Color_Marbles = 16
+    Summer_Train = 17
+    Christmas_Eve = 18
+    Dream_Sea = 19
+    # ── "Life" tab (app page 2) ──
+    Game = 20
+    Holiday = 21
+    Work = 22
+    Party = 23
+    Trend = 24
+    Sports = 25
+    Meditation = 26
+    Dating = 27
+    # ── "festival" tab (app page 3) ──
+    Christmas = 28
+    Valentines_Day = 29
+    Halloween = 30
+    Thanksgiving_Day = 31
+    Forest_Day = 32
+    Mothers_Day = 33
+    Fathers_Day = 34
+    Football_Day = 35
+    # ── "Feeling" tab (app page 4) ──
+    Summer_Idyll = 36
+    Dream_of_the_Sea = 37
+    Love_and_Dream = 38
+    Spring_Fishing = 39
+    Neon_World = 40
+    Dreamland = 41
+    Summer_Wind = 42
+    Planet_Journey = 43
 
 
 # ────────────────────────────────────────────────────────────────
-# Scene data payloads — correct format from Zigbee2MQTT GL-SPI-206P converter.
+# Scene data payloads — the device's FULL 44-scene "dreamlight" library,
+# captured live from the SmartLife app via Tuya-cloud DP51 read-back
+# (2026-07-07; see docs/woow-product/18-led-strip-scenes.md). Each value is
+# the exact raw DP51 blob the app sends; keyed by the ScenePreset select index.
 # Format: version(0x01) + scene_id(1) + effect_type(1) + speed(1) + gap(1)
 #         + per-color-node: hue_flags(1) + hue(1) + brightness(1)
+# Spaced hex is copied verbatim from the capture and decoded to bytes below.
 # ────────────────────────────────────────────────────────────────
 
-SCENE_DATA = {
-    # 0x00 = Iceland Blue
-    0x00: bytes([0x01, 0x15, 0x0a, 0x52, 0x52,
-                 0xe0, 0x00, 0x00, 0x64,
-                 0x00, 0xc1, 0x61,
-                 0x00, 0xb4, 0x30,
-                 0x00, 0xb5, 0x52,
-                 0x00, 0xc4, 0x63]),
-    # 0x01 = Glacier Express
-    0x01: bytes([0x01, 0x16, 0x0a, 0x64, 0x64,
-                 0x60, 0x00, 0x00, 0x64,
-                 0x00, 0x92, 0x5f,
-                 0x00, 0xc6, 0x60]),
-    # 0x02 = Sea of Clouds
-    0x02: bytes([0x01, 0x17, 0x03, 0x5e, 0x5e,
-                 0x60, 0x00, 0x00, 0x64,
-                 0x00, 0x38, 0x2f,
-                 0x00, 0x1e, 0x5c,
-                 0x00, 0xd5, 0x45,
-                 0x01, 0x1a, 0x64]),
-    # 0x03 = Fireworks at Sea
-    0x03: bytes([0x01, 0x18, 0x02, 0x64, 0x64,
-                 0xe0, 0x00, 0x00, 0x64,
-                 0x00, 0xb2, 0x39,
-                 0x01, 0x0a, 0x64,
-                 0x01, 0x2d, 0x64,
-                 0x01, 0x3f, 0x64]),
-    # 0x04 = Firefly Night
-    0x04: bytes([0x01, 0x1a, 0x03, 0x4b, 0x4b,
-                 0xe0, 0x00, 0x00, 0x64,
-                 0x00, 0xe0, 0x39,
-                 0x01, 0x09, 0x53]),
-    # 0x05 = Grassland
-    0x05: bytes([0x01, 0x1c, 0x0a, 0x5a, 0x5a,
-                 0xe0, 0x00, 0x00, 0x52,
-                 0x00, 0x9d, 0x64,
-                 0x00, 0x8e, 0x64]),
-    # 0x06 = Northern Lights
-    0x06: bytes([0x01, 0x1d, 0x03, 0x52, 0x52,
-                 0xe0, 0x00, 0x00, 0x64,
-                 0x00, 0xae, 0x64,
-                 0x00, 0xa6, 0x64,
-                 0x00, 0xc1, 0x64,
-                 0x00, 0xcc, 0x64]),
-    # 0x07 = Late Autumn
-    0x07: bytes([0x01, 0x1e, 0x0a, 0x52, 0x52,
-                 0xe0, 0x00, 0x00, 0x64,
-                 0x00, 0x19, 0x64,
-                 0x00, 0x22, 0x5e,
-                 0x00, 0x2c, 0x5b,
-                 0x00, 0x14, 0x64,
-                 0x00, 0x0c, 0x64]),
-    # 0x08 = Game
-    0x08: bytes([0x01, 0x1f, 0x02, 0x5f, 0x5f,
-                 0x60, 0x00, 0x00, 0x64,
-                 0x01, 0x10, 0x64,
-                 0x00, 0xd2, 0x64,
-                 0x00, 0xad, 0x64,
-                 0x00, 0x8b, 0x64]),
-    # 0x09 = Holiday
-    0x09: bytes([0x01, 0x20, 0x0a, 0x55, 0x55,
-                 0x60, 0x00, 0x00, 0x64,
-                 0x00, 0xc2, 0x58,
-                 0x01, 0x3e, 0x33,
-                 0x00, 0xff, 0x46,
-                 0x01, 0x1d, 0x64]),
-    # 0x0A = Party
-    0x0A: bytes([0x01, 0x22, 0x04, 0x64, 0x64,
-                 0x60, 0x00, 0x00, 0x64,
-                 0x00, 0xd7, 0x5c,
-                 0x00, 0xbc, 0x53,
-                 0x00, 0x37, 0x1e,
-                 0x00, 0x2c, 0x3f,
-                 0x01, 0x61, 0x3f]),
-    # 0x0B = Trend
-    0x0B: bytes([0x01, 0x23, 0x02, 0x64, 0x64,
-                 0x60, 0x00, 0x00, 0x64,
-                 0x01, 0x08, 0x4b,
-                 0x00, 0xb1, 0x2f,
-                 0x00, 0xcd, 0x57]),
-    # 0x0C = Meditation
-    0x0C: bytes([0x01, 0x25, 0x03, 0x43, 0x43,
-                 0x60, 0x00, 0x00, 0x64,
-                 0x00, 0xb7, 0x35,
-                 0x00, 0x9b, 0x54,
-                 0x00, 0xcd, 0x61]),
-    # 0x0D = Dating
-    0x0D: bytes([0x01, 0x26, 0x01, 0x59, 0x59,
-                 0xe0, 0x00, 0x00, 0x64,
-                 0x01, 0x19, 0x47,
-                 0x01, 0x49, 0x3d,
-                 0x00, 0xcd, 0x61,
-                 0x00, 0x26, 0x64]),
-    # 0x0E = Valentines Day
-    0x0E: bytes([0x01, 0x2a, 0x01, 0x64, 0x64,
-                 0x60, 0x00, 0x00, 0x64,
-                 0x01, 0x15, 0x64,
-                 0x01, 0x05, 0x64,
-                 0x01, 0x45, 0x64,
-                 0x01, 0x2f, 0x64]),
-    # 0x0F = Neon World
-    0x0F: bytes([0x01, 0x37, 0x0a, 0x5a, 0x5a,
-                 0x60, 0x00, 0x00, 0x64,
-                 0x00, 0x33, 0x58,
-                 0x00, 0x18, 0x64,
-                 0x01, 0x00, 0x45,
-                 0x00, 0xe3, 0x5e,
-                 0x00, 0xac, 0x30]),
+_SCENE_HEX = {
+    # ── "landscape" tab ──
+    0:  "01 15 0a 52 52 e0 00 00 64 00 c1 61 00 b4 30 00 b5 52 00 c4 63",  # Iceland Blue
+    1:  "01 16 0a 64 64 60 00 00 64 00 92 5f 00 c6 60",                    # Glacier Express
+    2:  "01 17 03 5e 5e 60 00 00 64 00 38 2f 00 1e 5c 00 d5 45 01 1a 64",  # Sea of Clouds
+    3:  "01 18 02 64 64 e0 00 00 64 00 b2 39 01 0a 64 01 2d 64 01 3f 64",  # Fireworks at Sea
+    4:  "01 19 0a 54 54 60 00 00 64 00 b1 2c 00 c0 64",                    # Hut in the Snow
+    5:  "01 1a 03 4b 4b e0 00 00 64 00 e0 39 01 09 53",                    # Firefly Night
+    6:  "01 1b 03 5f 5f 60 00 00 64 00 ae 39 00 c4 5d 00 f9 64",           # Northland
+    7:  "01 1c 0a 5a 5a e0 00 00 52 00 9d 64 00 8e 64",                    # Grassland
+    8:  "01 1d 03 52 52 e0 00 00 64 00 ae 64 00 a6 64 00 c1 64 00 cc 64",  # Northern Lights
+    9:  "01 1e 0a 52 52 e0 00 00 64 00 19 64 00 22 5e 00 2c 5b 00 14 64 00 0c 64",  # Late Autumn
+    10: "01 47 05 4d 4d 00 00 00 64 01 03 45 00 c1 43",                    # Dream Meteor
+    11: "01 48 06 32 32 00 00 00 64 01 4e 41 00 1f 49",                    # Early Spring
+    12: "01 49 07 0e 0e 00 00 00 64 00 da 37 01 52 41 00 5c 37",           # Spring Outing
+    13: "01 4a 08 32 32 00 00 00 64 00 f7 50 00 29 4f 01 0d 38 00 a3 27",  # Night Service
+    14: "01 4b 09 32 32 00 00 00 64 01 03 45 00 41 3a 00 25 4b 00 5e 42",  # Wind Chime
+    15: "01 4c 0c 32 32 00 00 00 64 00 d8 4d 00 c1 43 01 03 45 00 5c 37",  # City Lights
+    16: "01 4d 0d 32 32 00 00 00 64 00 28 64 00 5e 42 00 c1 64 00 ff 50",  # Color Marbles
+    17: "01 4e 0e 32 32 00 00 00 64 00 3e 5f 00 be 5c",                    # Summer Train
+    18: "01 4f 0f 19 19 00 00 00 64 00 bc 64 00 2d 4e 00 00 64 00 64 3c",  # Christmas Eve
+    19: "01 50 10 32 32 00 00 00 64 00 e6 47 00 64 3c 01 19 4d 00 b8 39",  # Dream Sea
+    # ── "Life" tab ──
+    20: "01 1f 02 5f 5f 60 00 00 64 01 10 64 00 d2 64 00 ad 64 00 8b 64",  # Game
+    21: "01 20 0a 55 55 60 00 00 64 00 c2 58 01 3e 33 00 ff 46 01 1d 64",  # Holiday
+    22: "01 21 03 3c 3c 60 00 00 64 00 bf 18 01 04 17",                    # Work
+    23: "01 22 04 64 64 60 00 00 64 00 d7 5c 00 bc 53 00 37 1e 00 2c 3f 01 61 3f",  # Party
+    24: "01 23 02 64 64 60 00 00 64 01 08 4b 00 b1 2f 00 cd 57",           # Trend
+    25: "01 24 0a 4b 4b 60 00 00 64 00 bc 26 00 d6 55 01 18 64 00 f9 4d",  # Sports
+    26: "01 25 03 43 43 60 00 00 64 00 b7 35 00 9b 54 00 cd 61",           # Meditation
+    27: "01 26 01 59 59 e0 00 00 64 01 19 47 01 49 3d 00 cd 61 00 26 64",  # Dating
+    # ── "festival" tab ──
+    28: "01 29 02 61 61 e0 00 00 64 00 0b 64 00 d9 64 00 2b 64 00 91 64 00 b9 64",  # Christmas
+    29: "01 2a 01 64 64 60 00 00 64 01 15 64 01 05 64 01 45 64 01 2f 64",  # Valentine's Day
+    30: "01 2b 03 5a 5a e0 00 00 64 00 00 57 01 16 64 00 da 64 00 b3 64 00 95 64",  # Halloween
+    31: "01 2c 0a 48 48 60 00 00 64 00 3d 64 01 0c 5b 00 ba 49 00 17 61",  # Thanksgiving Day
+    32: "01 2d 02 59 59 60 00 00 64 00 9c 63 00 bc 62 00 7b 60",           # Forest Day
+    33: "01 2e 03 5a 5a 60 00 00 64 01 3e 36 01 0c 56 01 1f 23",           # Mother's Day
+    34: "01 2f 02 64 64 e0 00 00 64 00 dc 42 00 b6 4a 00 e1 4d",           # Father's Day
+    35: "01 30 02 5e 5e 60 00 00 64 00 00 64 00 78 64 00 bb 64",           # Football Day
+    # ── "Feeling" tab ──
+    36: "01 33 03 52 52 60 00 00 64 00 88 50 00 d2 39 00 fb 27",           # Summer Idyll
+    37: "01 34 03 5d 5d 60 00 00 64 00 f7 36 01 35 2b 00 c6 34 00 91 29",  # Dream of the Sea
+    38: "01 35 03 52 52 60 00 00 4d 01 12 62 01 30 5d",                    # Love and Dream
+    39: "01 36 02 49 49 60 00 00 64 00 66 3c 00 3c 49 00 1e 64",           # Spring Fishing
+    40: "01 37 0a 5a 5a 60 00 00 64 00 33 58 00 18 64 01 00 45 00 e3 5e 00 ac 30",  # Neon World
+    41: "01 38 02 57 57 e0 00 00 64 01 0c 64 01 1a 41 01 47 59 00 15 64 00 3c 38",  # Dreamland
+    42: "01 39 03 48 48 e0 00 00 64 00 59 64 00 b3 47",                    # Summer Wind
+    43: "01 3a 02 5d 5d e0 00 00 4d 00 b4 5e 01 1c 64 00 e8 49 00 c6 5f",  # Planet Journey
 }
+
+SCENE_DATA = {k: bytes.fromhex(h.replace(" ", "")) for k, h in _SCENE_HEX.items()}
 
 SCENE_NAMES = [e.name.replace("_", " ") for e in ScenePreset]
 
@@ -877,45 +881,47 @@ class TuyaSPILightMCUCluster(TuyaMCUCluster):
         # Everything else: delegate to parent for MCU attribute mapping
         super()._dp_2_attr_update(datapoint)
 
-    # ── Command bus handler (for non-light entities like scene select) ──
+    # ── Scene playback (used by the HA light-effect patch, light_effects.py) ──
+
+    def play_scene(self, scene_index: int) -> None:
+        """Play a dreamlight scene by its ScenePreset index (0..43).
+
+        Sends DP1=on + DP2=scene_mode + DP51=raw scene data in one frame
+        (matching the SmartLife app / Zigbee2MQTT approach for GL-SPI-206P) and
+        updates local OnOff/Level state so the light entity shows on at full.
+        Exposed as HA light *effects* by light_effects.py's monkey-patch; the
+        raw payloads are in SCENE_DATA and the names in SCENE_NAMES.
+        """
+        scene_bytes = SCENE_DATA.get(int(scene_index))
+        if scene_bytes is None:
+            self.warning("Unknown scene index: %s", scene_index)
+            return
+        self._send_dp_commands([
+            TuyaDatapointData(1, TuyaData(t.Bool(True))),
+            TuyaDatapointData(2, TuyaData(t.enum8(0x02))),
+            self._make_raw_dpd(51, scene_bytes),
+        ])
+        # Update local state to reflect scene is active and light is on
+        on_off_cluster = self.endpoint.on_off
+        if on_off_cluster:
+            on_off_cluster._update_attribute(OnOff.AttributeDefs.on_off.id, True)
+        level_cluster = self.endpoint.level
+        if level_cluster:
+            level_cluster._update_attribute(
+                LevelControl.AttributeDefs.current_level.id, 254
+            )
+
+    # ── Command bus handler (config DPs 53/101/102/103) ──
 
     def tuya_mcu_command(self, cluster_data: TuyaClusterData):
-        """Handle commands from ZCL clusters routed via command bus.
+        """Delegate command-bus writes to the parent.
 
-        Light-related DPs (1, 2, 3, 4, 61) are now handled directly by
-        the ZCL clusters via queue_dp/queue_color_*/flush_batch, bypassing
-        this method entirely.
+        Light DPs (1/2/3/4/61) are handled directly by the ZCL clusters via
+        queue_dp/queue_color_*/flush_batch; scenes are sent via play_scene()
+        (from the light-effect patch). Everything else — the config DPs
+        (pixel_count 53, colour_order 101, chip_type 102, DND 103) — is handled
+        by the parent TuyaMCUCluster.
         """
-
-        # --- Scene select → DP1=on + DP2=scene + DP51=raw ---
-        if cluster_data.cluster_attr == "scene_select":
-            scene_id = int(cluster_data.attr_value)
-            scene_bytes = SCENE_DATA.get(scene_id)
-            if scene_bytes is None:
-                self.warning("Unknown scene ID: %s", scene_id)
-                return
-            # Send DP1=on, DP2=scene_mode, DP51=scene_data in one frame
-            # (matching Zigbee2MQTT's approach for GL-SPI-206P)
-            self._send_dp_commands([
-                TuyaDatapointData(1, TuyaData(t.Bool(True))),
-                TuyaDatapointData(2, TuyaData(t.enum8(0x02))),
-                self._make_raw_dpd(51, scene_bytes),
-            ])
-            # Update local state to reflect scene is active and light is on
-            on_off_cluster = self.endpoint.on_off
-            if on_off_cluster:
-                on_off_cluster._update_attribute(
-                    OnOff.AttributeDefs.on_off.id, True
-                )
-            level_cluster = self.endpoint.level
-            if level_cluster:
-                level_cluster._update_attribute(
-                    LevelControl.AttributeDefs.current_level.id, 254
-                )
-            self.update_attribute("scene_select", scene_id)
-            return
-
-        # Everything else: delegate to parent
         super().tuya_mcu_command(cluster_data)
 
 
@@ -931,15 +937,9 @@ class TuyaSPILightMCUCluster(TuyaMCUCluster):
     .adds(TuyaSPIOnOffNM)
     .adds(TuyaSPILevelControl)
     .adds(TuyaSPIColorControl)
-    # ── Scene preset (exposed as select — like WLED preset entity) ──
-    .tuya_enum(
-        dp_id=51,
-        attribute_name="scene_select",
-        enum_class=ScenePreset,
-        entity_type=EntityType.STANDARD,
-        translation_key="scene_select",
-        fallback_name="Scene",
-    )
+    # ── Scenes are exposed as HA light *effects* (light_effects.py monkey-patch),
+    #    not as a select entity — the 44 scenes live in SCENE_DATA/SCENE_NAMES and
+    #    are played via TuyaSPILightMCUCluster.play_scene(). ──
     # ── Pixel count (CONFIG) ──
     .tuya_number(
         dp_id=53,

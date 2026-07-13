@@ -344,48 +344,9 @@ class ThreeGangScreenLabelCluster(TuyaMCUCluster):
         translation_key="on_off_3",
         fallback_name="Switch 3",
     )
-    # ── All on/off (DP 13) → Switch entity ─────────────────
-    .tuya_switch(
-        dp_id=13,
-        attribute_name="on_off_all",
-        entity_type=EntityType.STANDARD,
-        translation_key="on_off_all",
-        fallback_name="All On/Off",
-    )
-    # ── Countdown timers (DP 7-9) → Number entities ─────────
-    .tuya_number(
-        dp_id=7,
-        attribute_name="countdown_1",
-        type=t.uint32_t,
-        min_value=0,
-        max_value=86400,
-        step=1,
-        entity_type=EntityType.CONFIG,
-        translation_key="countdown_1",
-        fallback_name="Countdown 1",
-    )
-    .tuya_number(
-        dp_id=8,
-        attribute_name="countdown_2",
-        type=t.uint32_t,
-        min_value=0,
-        max_value=86400,
-        step=1,
-        entity_type=EntityType.CONFIG,
-        translation_key="countdown_2",
-        fallback_name="Countdown 2",
-    )
-    .tuya_number(
-        dp_id=9,
-        attribute_name="countdown_3",
-        type=t.uint32_t,
-        min_value=0,
-        max_value=86400,
-        step=1,
-        entity_type=EntityType.CONFIG,
-        translation_key="countdown_3",
-        fallback_name="Countdown 3",
-    )
+    # NOTE: All-On/Off (DP13) and Countdown timers (DP7-9) are intentionally
+    # NOT exposed as entities (removed per user request). The device may still
+    # emit those DP reports; TuyaMCUCluster logs them as unhandled at debug level.
     # ── Indicator LED mode (DP 15) → Select entity ───────────
     .tuya_enum(
         dp_id=15,
@@ -487,6 +448,10 @@ class ThreeGangScreenLabelCluster(TuyaMCUCluster):
         access=foundation.ZCLAttributeAccess.Read | foundation.ZCLAttributeAccess.Write,
         dp_converter=_str_to_raw_tuya,
     )
+    # ── Suppress the redundant firmware/OTA update entity ────
+    # No ZHA-distributable OTA image exists for this Tuya device, so the update
+    # entity is permanently inert.
+    .prevent_default_entity_creation(unique_id_suffix="firmware_update")
     .skip_configuration()
     .add_to_registry(replacement_cluster=ThreeGangScreenLabelCluster)
 )

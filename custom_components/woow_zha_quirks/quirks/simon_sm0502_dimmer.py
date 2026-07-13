@@ -24,8 +24,9 @@ Tuya manufacturer-specific LevelControl attributes:
   - 0xFC01 (uint8)  — dimming mode / curve type
 
 Virtual attributes (split from 0xFC00 for user-friendly control):
-  - 0xFC10 — min brightness (0-255), stored in high byte of 0xFC00
-  - 0xFC11 — max brightness (0-255), stored in low byte of 0xFC00
+  - 0xFC10 — min brightness, HA-facing as percent (0-100), high byte of 0xFC00
+  - 0xFC11 — max brightness, HA-facing as percent (0-100), low byte of 0xFC00
+    (raw byte 0-255 is converted to/from percent in SimonLevelControlCluster)
 
 Quirk adds:
   1. Remove phantom endpoints 3 & 4
@@ -48,7 +49,6 @@ from zigpy.zcl.foundation import ZCLAttributeDef
 from zhaquirks import LocalDataCluster
 from zhaquirks.tuya import (
     NoManufacturerCluster,
-    SwitchBackLight,
     TuyaZBOnOffAttributeCluster,
 )
 
@@ -65,6 +65,29 @@ TUYA_DIMMING_MODE = 0xFC01
 # Virtual attribute IDs for split min/max (not real ZCL attrs)
 VIRTUAL_MIN_BRIGHTNESS = 0xFC10
 VIRTUAL_MAX_BRIGHTNESS = 0xFC11
+
+
+def _raw_to_pct(raw: int) -> int:
+    """Device byte (0-255) → percent (0-100)."""
+    return round(raw * 100 / 255)
+
+
+def _pct_to_raw(pct: int) -> int:
+    """Percent (0-100) → device byte (0-255)."""
+    return round(pct * 255 / 100)
+
+
+class SimonBacklightMode(t.enum8):
+    """Backlight/indicator mode — labels match the Tuya app for this device.
+
+    ZHA renders an enum entity's state from the member name (underscores
+    shown as spaces), so these display as "Switch Status" / "Close" /
+    "Switch Position". Integer values match the device attribute.
+    """
+
+    Switch_Status = 0x00
+    Close = 0x01
+    Switch_Position = 0x02
 
 
 class TuyaDimmingMode(t.enum8):
@@ -89,8 +112,10 @@ class SimonLevelControlCluster(NoManufacturerCluster, LevelControl):
     Example: 0x4DFF → min=77(~30%), max=255(100%)
 
     This cluster exposes two virtual attributes (0xFC10, 0xFC11) as
-    separate number entities. Writes to either virtual attribute
-    read-modify-write the underlying 0xFC00.
+    separate number entities, scaled to percent (0-100) for the HA UI.
+    Reads convert the raw byte → percent; writes convert percent → raw
+    byte and read-modify-write the underlying 0xFC00. (255 raw levels map
+    to 100 %, so values may round-trip ±1 %.)
     """
 
     class AttributeDefs(LevelControl.AttributeDefs):
@@ -110,17 +135,17 @@ class SimonLevelControlCluster(NoManufacturerCluster, LevelControl):
         )
 
     def get(self, key, default=None):
-        """Override get to compute virtual attrs from cached 0xFC00."""
+        """Override get to compute virtual attrs (as percent) from cached 0xFC00."""
         if key in (VIRTUAL_MIN_BRIGHTNESS, VIRTUAL_MAX_BRIGHTNESS):
             val = super().get(key)
             if val is None:
                 packed = super().get(TUYA_LEVEL_MIN_MAX)
                 if packed is not None and isinstance(packed, int):
                     super()._update_attribute(
-                        VIRTUAL_MIN_BRIGHTNESS, (packed >> 8) & 0xFF
+                        VIRTUAL_MIN_BRIGHTNESS, _raw_to_pct((packed >> 8) & 0xFF)
                     )
                     super()._update_attribute(
-                        VIRTUAL_MAX_BRIGHTNESS, packed & 0xFF
+                        VIRTUAL_MAX_BRIGHTNESS, _raw_to_pct(packed & 0xFF)
                     )
                     return super().get(key, default)
             return val if val is not None else default
@@ -140,9 +165,9 @@ class SimonLevelControlCluster(NoManufacturerCluster, LevelControl):
                 attr_id = attr_id.id
 
             if attr_id == VIRTUAL_MIN_BRIGHTNESS:
-                min_write = int(value) & 0xFF
+                min_write = _pct_to_raw(int(value))  # percent → raw byte
             elif attr_id == VIRTUAL_MAX_BRIGHTNESS:
-                max_write = int(value) & 0xFF
+                max_write = _pct_to_raw(int(value))  # percent → raw byte
             else:
                 real_attrs[attr] = value
 
@@ -166,12 +191,15 @@ class SimonLevelControlCluster(NoManufacturerCluster, LevelControl):
         if attrid == TUYA_LEVEL_MIN_MAX and isinstance(value, int):
             min_val = (value >> 8) & 0xFF
             max_val = value & 0xFF
+            min_pct = _raw_to_pct(min_val)
+            max_pct = _raw_to_pct(max_val)
             _LOGGER.debug(
-                "SM0502 EP%d 0xFC00=0x%04X → min=%d, max=%d",
-                self.endpoint.endpoint_id, value, min_val, max_val,
+                "SM0502 EP%d 0xFC00=0x%04X → min=%d (%d%%), max=%d (%d%%)",
+                self.endpoint.endpoint_id, value,
+                min_val, min_pct, max_val, max_pct,
             )
-            super()._update_attribute(VIRTUAL_MIN_BRIGHTNESS, min_val)
-            super()._update_attribute(VIRTUAL_MAX_BRIGHTNESS, max_val)
+            super()._update_attribute(VIRTUAL_MIN_BRIGHTNESS, min_pct)
+            super()._update_attribute(VIRTUAL_MAX_BRIGHTNESS, max_pct)
 
 
 class AllOnOffCluster(LocalDataCluster, OnOff):
@@ -238,6 +266,15 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
     # ── Remove phantom endpoints 3 & 4 ──
     .removes_endpoint(endpoint_id=3)
     .removes_endpoint(endpoint_id=4)
+    # ── Suppress OnOff StartUpOnOff selects ("啟動時的通電行為") on both gangs ──
+    .prevent_default_entity_creation(
+        endpoint_id=1, cluster_id=ONOFF,
+        unique_id_suffix="StartUpOnOff",
+    )
+    .prevent_default_entity_creation(
+        endpoint_id=2, cluster_id=ONOFF,
+        unique_id_suffix="StartUpOnOff",
+    )
     # ── Suppress useless default LevelControl entities (EP1) ──
     .prevent_default_entity_creation(
         endpoint_id=1, cluster_id=LEVEL,
@@ -284,58 +321,62 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
     # ── Indicator LED mode (config entity on EP1) ──
     .enum(
         TuyaZBOnOffAttributeCluster.AttributeDefs.backlight_mode.name,
-        SwitchBackLight,
+        SimonBacklightMode,
         ONOFF,
         endpoint_id=1,
         entity_type=EntityType.CONFIG,
         translation_key="backlight_mode",
         fallback_name="Indicator Mode",
     )
-    # ── Min brightness per gang (virtual 0xFC10 → high byte of 0xFC00) ──
+    # ── Min brightness per gang (virtual 0xFC10 → high byte of 0xFC00, shown as %) ──
     .number(
         SimonLevelControlCluster.AttributeDefs.min_brightness.name,
         LEVEL,
         endpoint_id=1,
         min_value=0,
-        max_value=255,
+        max_value=100,
         step=1,
+        unit="%",
         entity_type=EntityType.CONFIG,
-        translation_key="min_brightness",
-        fallback_name="Min Brightness",
+        translation_key="min_brightness_1",
+        fallback_name="Min Brightness 1",
     )
     .number(
         SimonLevelControlCluster.AttributeDefs.min_brightness.name,
         LEVEL,
         endpoint_id=2,
         min_value=0,
-        max_value=255,
+        max_value=100,
         step=1,
+        unit="%",
         entity_type=EntityType.CONFIG,
-        translation_key="min_brightness",
-        fallback_name="Min Brightness",
+        translation_key="min_brightness_2",
+        fallback_name="Min Brightness 2",
     )
-    # ── Max brightness per gang (virtual 0xFC11 → low byte of 0xFC00) ──
+    # ── Max brightness per gang (virtual 0xFC11 → low byte of 0xFC00, shown as %) ──
     .number(
         SimonLevelControlCluster.AttributeDefs.max_brightness.name,
         LEVEL,
         endpoint_id=1,
         min_value=0,
-        max_value=255,
+        max_value=100,
         step=1,
+        unit="%",
         entity_type=EntityType.CONFIG,
-        translation_key="max_brightness",
-        fallback_name="Max Brightness",
+        translation_key="max_brightness_1",
+        fallback_name="Max Brightness 1",
     )
     .number(
         SimonLevelControlCluster.AttributeDefs.max_brightness.name,
         LEVEL,
         endpoint_id=2,
         min_value=0,
-        max_value=255,
+        max_value=100,
         step=1,
+        unit="%",
         entity_type=EntityType.CONFIG,
-        translation_key="max_brightness",
-        fallback_name="Max Brightness",
+        translation_key="max_brightness_2",
+        fallback_name="Max Brightness 2",
     )
     # ── Suppress dimming mode (0xFC01 is read-only on this device) ──
     .prevent_default_entity_creation(
@@ -349,5 +390,9 @@ class AllOnOffCluster(LocalDataCluster, OnOff):
     # ── AllOnOff virtual endpoint ──
     .adds_endpoint(endpoint_id=ALL_ONOFF_EP)
     .adds(AllOnOffCluster, endpoint_id=ALL_ONOFF_EP)
+    # Suppress redundant per-endpoint firmware/OTA update entities (all gangs).
+    # OTA cluster (0x0019) is mirrored on every endpoint and has no ZHA OTA image,
+    # so each firmware entity sits permanently "unknown". One rule, all endpoints.
+    .prevent_default_entity_creation(unique_id_suffix="firmware_update")
     .add_to_registry()
 )

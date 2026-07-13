@@ -1,22 +1,36 @@
-"""ZHA Quirk (v5) for Tuya Ceiling Fan with Light (_TZE200_hmgktzj2 / TS0601).
+"""ZHA Quirk (v5) for Tuya Ceiling Fan (_TZE200_hmgktzj2 / TS0601) — FAN ONLY.
 
-Monkey-patches ZHA fan constants at import time:
+Per user request this quirk exposes ONLY the fan entity. The light (DP5),
+Color-Temperature select (DP102) and the firmware update entity have been removed
+(firmware suppressed via prevent_default_entity_creation). DP5/DP102 reports from
+the device are simply ignored (DP102 falls through to a debug log).
+
+Monkey-patches ZHA fan constants (applied lazily — see note below):
   SPEED_RANGE = (1, 6)          — 6 speed levels via percentage
   PRESET_MODES_TO_NAME = {7: "一般（風量3）", 8: "自然風", 9: "舒眠"}
   DIRECTION support            — native fan.set_direction forward/reverse
 
+Patch timing (important):
+  The patch canNOT run reliably at module-import time. Quirks are imported in
+  HA's early ImportExecutor phase, before the `zha` integration has loaded its
+  platform modules; importing `zha.application.platforms.fan(.const)` in isolation
+  there trips a circular import inside the zha lib, so the import-time attempt
+  DEFERS. The patch is therefore (re)invoked from TuyaCeilingFanCluster.__init__
+  at device-setup time, when ZHA is fully loaded and the Fan entity has not yet
+  been created (its speed_range / preset_modes / supported_features are
+  cached_property, so the patch must land before first access). A one-shot
+  `_FAN_PATCH_DONE` guard keeps it idempotent.
+
 Native HA entities:
   - fan.*      : Native fan entity with 6 speeds, 3 presets, direction control
-  - light.*    : Simple on/off light (no brightness)
-  - select.*   : "Color Temperature" — 3-level (白光/自然光/黃光)
 
 DP Map:
   DP  1   : Fan switch          (Bool)
   DP  3   : Fan speed           (Enum: 0=off, 1-6=speed, 7=natural wind, 8=sleep)
-  DP  5   : Light switch        (Bool)
   DP  101 : Fan direction       (Enum: 0=reverse, 1=forward)
-  DP  102 : Light color temp    (Enum: 0=warm, 50=neutral, 100=cool)
   DP  103 : (device echoes but NOT real direction — see DP101)
+  DP  5   : Light switch        (Bool)  — NOT consumed (light entity removed)
+  DP  102 : Light color temp    (Enum)  — NOT consumed (select removed)
 
 Fan entity (ZCL Fan cluster 0x0202):
   With patched SPEED_RANGE=(1,6), 6 speed levels via percentage:
@@ -37,27 +51,14 @@ Fan entity (ZCL Fan cluster 0x0202):
     fan.set_direction forward → DP101=1
     fan.set_direction reverse → DP101=0
     Direction change uses stop→set→restart sequence.
-    Light state is preserved during direction change.
-
-Light entity:
-  OnOff cluster on endpoint 2 bridges DP5.
-
-Color temp SELECT:
-  Warm (黃光) → DP102=0
-  Natural (自然光) → DP102=50
-  White (白光) → DP102=100
 """
 
 from __future__ import annotations
 
 import sys
-from typing import Any
 
-from zigpy.profiles import zha
-from zigpy.quirks.v2.homeassistant import EntityType
 import zigpy.types as t
 from zigpy.zcl import foundation
-from zigpy.zcl.clusters.general import OnOff
 from zigpy.zcl.clusters.hvac import Fan
 
 from zhaquirks.tuya import (
@@ -85,29 +86,46 @@ _PATCHED_SPEED_RANGE = (1, 6)
 _PATCHED_PRESET_MODES = {7: "一般（風量3）", 8: "自然風", 9: "舒眠"}
 _PATCHED_LEGACY_SPEEDS = ["low", "medium", "high", "speed_4", "speed_5", "speed_6"]
 
+# One-shot guard. Stays False until a patch attempt fully succeeds, so an early
+# (import-time) attempt that has to defer does NOT block the later runtime call.
+_FAN_PATCH_DONE = False
+
 
 def _apply_fan_patch():
     """Patch ZHA fan constants for 6-speed support.
 
-    Works whether the ZHA fan modules are already loaded or not:
-    - If loaded: patches in-place via sys.modules
-    - If not yet loaded: imports const module (safe — no circular deps)
-      and patches it so later imports pick up the patched values
+    Called twice by design:
+    - Once at module import time (best-effort). During HA's early ImportExecutor
+      phase the ZHA fan platform is not importable yet (importing it in isolation
+      trips a circular import in the zha lib), so this attempt simply DEFERS.
+    - Again from TuyaCeilingFanCluster.__init__ at device-setup time, when ZHA is
+      fully loaded — sys.modules already holds the fan module, so the safe in-place
+      patch branch runs before the Fan entity (and its cached_property values) is
+      created.
+
+    The `_FAN_PATCH_DONE` guard makes it idempotent and retry-safe.
     """
+    global _FAN_PATCH_DONE
     import importlib
     import logging
 
     _log = logging.getLogger(__name__)
+    if _FAN_PATCH_DONE:
+        return
     _name_to_preset = {v: k for k, v in _PATCHED_PRESET_MODES.items()}
 
-    # 1) Patch the const module (import it if needed — it has no circular deps)
+    # 1) Patch the const module. At runtime it's already loaded; during the early
+    #    import phase importing it in isolation trips a circular import — in that
+    #    case we DEFER (the cluster-init call will succeed later).
     _const_name = "zha.application.platforms.fan.const"
     _const_mod = sys.modules.get(_const_name)
     if _const_mod is None:
         try:
             _const_mod = importlib.import_module(_const_name)
         except ImportError:
-            _log.warning("Cannot import %s — fan speed patch not applied", _const_name)
+            _log.debug(
+                "zha fan module not importable yet — deferring patch (%s)", _const_name
+            )
             return
 
     _const_mod.SPEED_RANGE = _PATCHED_SPEED_RANGE
@@ -154,6 +172,13 @@ def _apply_fan_patch():
     #    - async_set_direction method (calls into the Tuya MCU cluster)
     _apply_direction_patch(_log)
 
+    _FAN_PATCH_DONE = True
+    _log.info(
+        "ZHA fan patch applied: SPEED_RANGE=%s, presets=%s, direction enabled",
+        _PATCHED_SPEED_RANGE,
+        list(_PATCHED_PRESET_MODES.values()),
+    )
+
 
 def _apply_direction_patch(_log):
     """Patch HA ZhaFan + ZHA Fan to support fan.set_direction via Tuya DP101.
@@ -196,52 +221,87 @@ def _apply_direction_patch(_log):
         _ZhaFanEntity._async_tuya_set_direction = _async_tuya_set_direction
         _log.info("Patched ZHA Fan entity: added _tuya_direction + _async_tuya_set_direction")
 
+    # Include direction in the entity's tracked `state` dict. maybe_emit_state_changed_event()
+    # dedupes on that dict, and stock Fan.state has no direction key — so a direction-only
+    # change (e.g. from the physical remote) would be invisible and never pushed to HA.
+    # Adding current_direction here lets the dedupe detect it. For non-Tuya fans the value is
+    # a constant ("forward") → no spurious emits.
+    if (
+        _ZhaFanEntity is not None
+        and not getattr(_ZhaFanEntity, "_tuya_state_direction_patched", False)
+    ):
+        _orig_state_fget = _ZhaFanEntity.state.fget
+
+        def _state_with_direction(self):
+            st = dict(_orig_state_fget(self))
+            cluster = getattr(self._fan_cluster_handler, "cluster", None)
+            st["current_direction"] = getattr(cluster, "_tuya_last_direction", "forward")
+            return st
+
+        _ZhaFanEntity.state = property(_state_with_direction)
+        _ZhaFanEntity._tuya_state_direction_patched = True
+        _log.info("Patched ZHA Fan entity: added current_direction to tracked state")
+
     # --- Patch HA ZhaFan bridge ---
-    try:
-        _ha_zha_fan_mod = sys.modules.get("homeassistant.components.zha.fan")
-        if _ha_zha_fan_mod is None:
-            _ha_zha_fan_mod = importlib.import_module("homeassistant.components.zha.fan")
-        _ZhaFan = getattr(_ha_zha_fan_mod, "ZhaFan", None)
-    except ImportError:
-        _ZhaFan = None
+    # cluster __init__ runs ON the event loop, so a fresh disk import of the HA
+    # fan module here would trip HA's blocking-call detector. If it's already
+    # loaded, patch inline; otherwise import it OFF-loop via the executor and
+    # patch when it lands — this completes before ZhaFan instances are created
+    # during fan-platform setup.
+    _ha_mod = sys.modules.get("homeassistant.components.zha.fan")
+    if _ha_mod is not None:
+        _patch_ha_zhafan(_ha_mod, _log)
+    else:
+        import asyncio
 
-    if _ZhaFan is not None and not hasattr(_ZhaFan, "_direction_patched"):
-        @property
-        def _current_direction(self):
-            """Return the current direction of the fan."""
-            entity = self.entity_data.entity
-            # _tuya_direction is a property on the patched ZHA Fan entity
-            # that reads from the cluster's _tuya_last_direction
-            try:
-                return entity._tuya_direction
-            except (AttributeError, TypeError):
-                return "forward"
+        try:
+            _loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _loop = None
+        if _loop is not None:
+            async def _load_and_patch_ha_bridge():
+                mod = await _loop.run_in_executor(
+                    None, importlib.import_module, "homeassistant.components.zha.fan"
+                )
+                _patch_ha_zhafan(mod, _log)
 
-        async def _async_set_direction(self, direction: str) -> None:
-            """Set the direction of the fan via Tuya DP101."""
-            entity = self.entity_data.entity
-            if hasattr(entity, "_async_tuya_set_direction"):
-                await entity._async_tuya_set_direction(direction)
-                self.async_write_ha_state()
+            asyncio.ensure_future(_load_and_patch_ha_bridge())
 
-        _ZhaFan.current_direction = _current_direction
-        _ZhaFan.async_set_direction = _async_set_direction
-        _ZhaFan._direction_patched = True
-        _log.info("Patched HA ZhaFan: added current_direction + async_set_direction")
+
+def _patch_ha_zhafan(_ha_zha_fan_mod, _log):
+    """Add current_direction + async_set_direction to HA's ZhaFan bridge class.
+
+    Idempotent — guarded by the `_direction_patched` marker on the class.
+    """
+    _ZhaFan = getattr(_ha_zha_fan_mod, "ZhaFan", None)
+    if _ZhaFan is None or hasattr(_ZhaFan, "_direction_patched"):
+        return
+
+    @property
+    def _current_direction(self):
+        """Return the current direction of the fan."""
+        entity = self.entity_data.entity
+        # _tuya_direction is a property on the patched ZHA Fan entity
+        # that reads from the cluster's _tuya_last_direction
+        try:
+            return entity._tuya_direction
+        except (AttributeError, TypeError):
+            return "forward"
+
+    async def _async_set_direction(self, direction: str) -> None:
+        """Set the direction of the fan via Tuya DP101."""
+        entity = self.entity_data.entity
+        if hasattr(entity, "_async_tuya_set_direction"):
+            await entity._async_tuya_set_direction(direction)
+            self.async_write_ha_state()
+
+    _ZhaFan.current_direction = _current_direction
+    _ZhaFan.async_set_direction = _async_set_direction
+    _ZhaFan._direction_patched = True
+    _log.info("Patched HA ZhaFan: added current_direction + async_set_direction")
 
 
 _apply_fan_patch()
-
-
-# ─────────────────────────────────────────────────────────────────
-# Enums for SELECT entities
-# ─────────────────────────────────────────────────────────────────
-
-class ColorTempLevel(t.enum8):
-    """3-level color temperature. Enum values = DP102 values."""
-    Warm = 0x00        # 黃光 (warm white) → DP102=0
-    Natural = 0x32     # 自然光 (neutral) → DP102=50
-    White = 0x64       # 白光 (cool white) → DP102=100
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -305,6 +365,11 @@ class TuyaCeilingFanCluster(Fan, TuyaLocalCluster):
     def __init__(self, *args, **kwargs):
         """Initialize with fan mode sequence."""
         super().__init__(*args, **kwargs)
+        # Runtime hook: apply the ZHA fan patch now (import-time attempt defers
+        # because the zha fan platform isn't importable that early). By the time
+        # this cluster is instantiated ZHA is fully loaded and the fan entity has
+        # not been created yet, so the 6-speed / preset / direction patch lands.
+        _apply_fan_patch()
         self._update_attribute(
             Fan.AttributeDefs.fan_mode_sequence.id,
             Fan.FanModeSequence.Low_Med_High_Auto,
@@ -352,10 +417,8 @@ class TuyaCeilingFanCluster(Fan, TuyaLocalCluster):
     async def tuya_set_direction(self, direction: str) -> None:
         """Set fan direction via DP101 with stop→set→restart sequence.
 
-        Only touches fan DPs (1, 3, 101, 103). Never touches DP5 (light).
-        Sets _direction_changing flag so DP5 reports from MCU are ignored
-        during the sequence (the MCU echoes DP5 when fan stops/starts).
-        Called from the patched ZHA Fan entity's _async_tuya_set_direction.
+        Only touches fan DPs (1, 3, 101, 103). Called from the patched ZHA Fan
+        entity's _async_tuya_set_direction.
         """
         import asyncio
 
@@ -366,19 +429,6 @@ class TuyaCeilingFanCluster(Fan, TuyaLocalCluster):
         current_mode = self.get(Fan.AttributeDefs.fan_mode.id, 0)
         was_running = current_mode > 0
         dp3_val = _FAN_MODE_TO_DP3.get(current_mode, 1)
-
-        # Save current light state — we'll force-restore it after unblocking
-        light_was_on = False
-        ep2 = self.endpoint.device.endpoints.get(2)
-        if ep2 and ep2.on_off:
-            light_was_on = bool(ep2.on_off.get(
-                OnOff.AttributeDefs.on_off.id, False
-            ))
-
-        # Block DP5 reports on the MCU cluster during direction change.
-        # _dp_2_attr_update runs on the MCU cluster (TuyaFanMCUCluster),
-        # not on this fan cluster, so set the flag there.
-        mcu._direction_changing = True
 
         # Step 1: Stop the fan
         mcu.send_dp(TuyaDatapointData(1, TuyaData(t.Bool(False))))
@@ -398,72 +448,12 @@ class TuyaCeilingFanCluster(Fan, TuyaLocalCluster):
         if was_running:
             mcu.send_dp(TuyaDatapointData(3, TuyaData(t.enum8(dp3_val))))
 
-        # Schedule delayed unblock + light restore.
-        # The MCU sends late DP5 echoes after fan restart, so we keep
-        # blocking for 15 seconds then force-restore the light state.
-        async def _delayed_unblock():
-            await asyncio.sleep(15)
-            mcu._direction_changing = False
-            if ep2 and ep2.on_off:
-                ep2.on_off._update_attribute(
-                    OnOff.AttributeDefs.on_off.id, light_was_on
-                )
-
-        asyncio.ensure_future(_delayed_unblock())
-
 
 class TuyaCeilingFanClusterNM(NoManufacturerCluster, TuyaCeilingFanCluster):
     """Fan cluster with no manufacturer ID."""
 
 
-# ─────────────────────────────────────────────────────────────────
-# Custom ZCL OnOff Cluster for Light — bridges DP5
-# ─────────────────────────────────────────────────────────────────
-
-class TuyaFanLightOnOff(OnOff, TuyaLocalCluster):
-    """OnOff cluster bridging Tuya DP5 (light switch).
-
-    Creates a simple on/off light entity on endpoint 2.
-    """
-
-    class AttributeDefs(OnOff.AttributeDefs):
-        pass
-
-    class ServerCommandDefs(OnOff.ServerCommandDefs):
-        pass
-
-    def _get_mcu(self):
-        """Get the MCU cluster from endpoint 1."""
-        return self.endpoint.device.endpoints[1].tuya_manufacturer
-
-    async def command(
-        self,
-        command_id: foundation.GeneralCommand | int | t.uint8_t,
-        *args,
-        manufacturer: int | t.uint16_t | None = None,
-        expect_reply: bool = True,
-        tsn: int | t.uint8_t | None = None,
-        **kwargs: Any,
-    ):
-        """Route on/off commands to Tuya DP5."""
-        if command_id in (0x0000, 0x0001):
-            on_val = bool(command_id)
-            mcu = self._get_mcu()
-            mcu.send_dp(TuyaDatapointData(5, TuyaData(t.Bool(on_val))))
-            self._update_attribute(OnOff.AttributeDefs.on_off.id, on_val)
-            return foundation.GENERAL_COMMANDS[
-                foundation.GeneralCommand.Default_Response
-            ].schema(command_id=command_id, status=foundation.Status.SUCCESS)
-        return foundation.GENERAL_COMMANDS[
-            foundation.GeneralCommand.Default_Response
-        ].schema(
-            command_id=command_id,
-            status=foundation.Status.UNSUP_CLUSTER_COMMAND,
-        )
-
-
-class TuyaFanLightOnOffNM(NoManufacturerCluster, TuyaFanLightOnOff):
-    """OnOff cluster with no manufacturer ID for light endpoint."""
+# (Light OnOff cluster removed — light entity is no longer exposed. DP5 ignored.)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -471,16 +461,16 @@ class TuyaFanLightOnOffNM(NoManufacturerCluster, TuyaFanLightOnOff):
 # ─────────────────────────────────────────────────────────────────
 
 class TuyaFanMCUCluster(TuyaMCUCluster):
-    """Extended TuyaMCU cluster for ceiling fan + light.
+    """Extended TuyaMCU cluster for ceiling fan.
 
     Handles:
-      - Incoming DP reports → updates Fan/OnOff cluster attributes
+      - Incoming DP reports → updates Fan cluster attributes
       - Outgoing DP commands via send_dp
       - Direction (DP101/DP103) incoming reports → stored on fan cluster
     """
 
     # DPs handled by custom ZCL clusters (not registered via builder)
-    _CUSTOM_DPS = frozenset({1, 3, 5, 101, 103})
+    _CUSTOM_DPS = frozenset({1, 3, 101, 103})
 
     def send_dp(self, dpd: TuyaDatapointData) -> None:
         """Send a single DP command immediately."""
@@ -507,7 +497,8 @@ class TuyaFanMCUCluster(TuyaMCUCluster):
                 except Exception as exc:  # noqa: BLE001
                     self.warning("Error handling custom DP %s: %s", record.dp, exc)
             else:
-                # Delegate builder-registered DPs (102) to parent
+                # Non-fan DPs (e.g. DP5 light, DP102 color temp) are no longer
+                # consumed — delegate to parent, which just debug-logs them.
                 try:
                     dp_handler = self.data_point_handlers[record.dp]
                     getattr(self, dp_handler)(record)
@@ -543,22 +534,6 @@ class TuyaFanMCUCluster(TuyaMCUCluster):
                 )
             return
 
-        # DP5: Light on/off → update OnOff cluster on endpoint 2
-        # Skip if direction change is in progress (MCU echoes DP5 during
-        # fan stop/start but we don't want the light entity to flicker)
-        if dp == 5:
-            if getattr(self, "_direction_changing", False):
-                return
-            light_on = bool(datapoint.data.payload)
-            ep2 = self.endpoint.device.endpoints.get(2)
-            if ep2:
-                on_off_cluster = ep2.on_off
-                if on_off_cluster:
-                    on_off_cluster._update_attribute(
-                        OnOff.AttributeDefs.on_off.id, light_on
-                    )
-            return
-
         # DP101/DP103: Direction report → store on fan cluster for entity to read
         if dp in (101, 103):
             dir_val = int(datapoint.data.payload)
@@ -568,6 +543,15 @@ class TuyaFanMCUCluster(TuyaMCUCluster):
             fan_cluster = self.endpoint.fan
             if fan_cluster:
                 fan_cluster._tuya_last_direction = direction
+                # Push the change to HA. Direction is not a real ZCL attribute, so re-emit
+                # the (unchanged) fan_mode to drive the same notify chain DP1/DP3 use:
+                # → cluster handler → Fan.maybe_emit_state_changed_event() → HA re-reads
+                # current_direction. Fan.state now includes current_direction, so the
+                # dedupe detects this direction-only change.
+                fan_cluster._update_attribute(
+                    Fan.AttributeDefs.fan_mode.id,
+                    fan_cluster.get(Fan.AttributeDefs.fan_mode.id, 0),
+                )
             return
 
         # Everything else: delegate to parent
@@ -582,19 +566,12 @@ class TuyaFanMCUCluster(TuyaMCUCluster):
     TuyaQuirkBuilder("_TZE200_hmgktzj2", "TS0601")
     # ── Endpoint 1: Fan entity (Fan cluster 0x0202 → fan.* domain) ──
     .adds(TuyaCeilingFanClusterNM)
-    # ── Endpoint 2: Light entity (OnOff cluster → light.* domain) ──
-    .adds_endpoint(2, device_type=zha.DeviceType.ON_OFF_LIGHT)
-    .adds(TuyaFanLightOnOffNM, endpoint_id=2)
-    # ── Color Temperature SELECT (白光/自然光/黃光) ──
-    .tuya_enum(
-        dp_id=102,
-        attribute_name="color_temp_level",
-        enum_class=ColorTempLevel,
-        entity_type=EntityType.STANDARD,
-        translation_key="color_temp_level",
-        fallback_name="Color Temperature",
-    )
+    # ── Suppress the redundant per-endpoint firmware update entity ──
+    .prevent_default_entity_creation(unique_id_suffix="firmware_update")
     .tuya_enchantment()
     .skip_configuration()
-    .add_to_registry(replacement_cluster=TuyaFanMCUCluster)
+    # force_add_cluster=True is REQUIRED: with no .tuya_* DP registrations left
+    # (light/select removed), the builder would otherwise skip attaching the
+    # 0xEF00 MCU cluster → endpoint.tuya_manufacturer missing → fan can't send DPs.
+    .add_to_registry(replacement_cluster=TuyaFanMCUCluster, force_add_cluster=True)
 )

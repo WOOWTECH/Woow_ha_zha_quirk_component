@@ -88,7 +88,13 @@ async def async_setup_relay_resync(hass: HomeAssistant) -> None:
 
     @callback
     def _kick(*_: Any) -> None:
-        hass.async_create_task(_async_resync(hass))
+        # Background task: consistent with the other woow helpers so it's never awaited during
+        # HA's startup wrap-up. getattr keeps very old HA cores working.
+        create_bg = getattr(hass, "async_create_background_task", None)
+        if create_bg is not None:
+            create_bg(_async_resync(hass), name="woow_zha_quirks relay_resync")
+        else:
+            hass.async_create_task(_async_resync(hass))
 
     async def _service(_call: Any) -> None:
         n = await _async_resync(hass)

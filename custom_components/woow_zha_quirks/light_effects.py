@@ -16,7 +16,7 @@ can never break HA startup or any other light):
   1. Wraps ``Light.recompute_capabilities`` — after the original runs, for our
      device it sets ``_effect_list = ["off", <44 scene names>]`` and OR-s in the
      ``EFFECT`` feature flag.
-  2. Wraps ``BaseClusterHandlerLight.async_turn_on`` — when ``effect`` is one of
+  2. Wraps ``BaseSharedLight.async_turn_on`` — when ``effect`` is one of
      our scene names, it calls the Tuya MCU cluster's ``play_scene(index)``
      (which sends DP1=on + DP2=scene + DP51=raw payload) and returns; otherwise
      it defers to the original (so off/brightness/colour/CCT behave normally).
@@ -52,25 +52,45 @@ NAME_TO_INDEX: dict[str, int] = {
 EFFECT_NAMES: list[str] = list(SCENE_NAMES)
 
 
+def _color_endpoint(entity: Any) -> Any:
+    """Return the zigpy endpoint behind the light's Color cluster.
+
+    HA 2026.7 exposes the Color cluster directly as ``entity._color_cluster``; older
+    ZHA wrapped it in a cluster handler (``entity._color_cluster_handler.cluster``).
+    """
+    cluster = getattr(entity, "_color_cluster", None)
+    if cluster is None:
+        handler = getattr(entity, "_color_cluster_handler", None)
+        cluster = getattr(handler, "cluster", None)
+    return getattr(cluster, "endpoint", None)
+
+
 def _is_target(entity: Any) -> bool:
     """True if this zha light entity is our Gledopto GL-SPI-206P."""
     try:
-        return (
-            entity._color_cluster_handler.cluster.endpoint.device.manufacturer
-            == TARGET_MANUFACTURER
-        )
+        return _color_endpoint(entity).device.manufacturer == TARGET_MANUFACTURER
     except Exception:  # noqa: BLE001 - any missing attr → not our device
         return False
 
 
 def _get_mcu(entity: Any) -> Any:
     """Return the device's Tuya MCU (0xEF00) cluster for scene playback."""
-    return entity._color_cluster_handler.cluster.endpoint.tuya_manufacturer
+    return _color_endpoint(entity).tuya_manufacturer
 
 
 def _apply_patch() -> bool:
     """Monkey-patch the zha Light class. Idempotent. Returns True if applied."""
-    from zha.application.platforms.light import BaseClusterHandlerLight, Light
+    # HA 2026.7 renamed the turn-on base class BaseClusterHandlerLight -> BaseSharedLight
+    # (hierarchy Light -> BaseSharedLight -> BaseLight; async_turn_on lives on
+    # BaseSharedLight). Fall back to the old name for older ZHA.
+    from zha.application.platforms.light import Light
+
+    try:
+        from zha.application.platforms.light import BaseSharedLight as _TurnOnBase
+    except ImportError:
+        from zha.application.platforms.light import (
+            BaseClusterHandlerLight as _TurnOnBase,
+        )
 
     try:
         from zha.application.platforms.light.const import EFFECT_OFF
@@ -96,7 +116,7 @@ def _apply_patch() -> bool:
     Light.recompute_capabilities = _recompute  # type: ignore[assignment]
 
     # ── 2. turn_on(effect=<scene>) → play_scene ─────────────────────────
-    _orig_turn_on = BaseClusterHandlerLight.async_turn_on
+    _orig_turn_on = _TurnOnBase.async_turn_on
 
     async def _turn_on(self: Any, *, effect: str | None = None, **kwargs: Any) -> None:
         if effect is not None and effect in NAME_TO_INDEX and _is_target(self):
@@ -110,7 +130,7 @@ def _apply_patch() -> bool:
         await _orig_turn_on(self, effect=effect, **kwargs)
 
     _turn_on._woow_patched = True  # type: ignore[attr-defined]
-    BaseClusterHandlerLight.async_turn_on = _turn_on  # type: ignore[assignment]
+    _TurnOnBase.async_turn_on = _turn_on  # type: ignore[assignment]
 
     return True
 

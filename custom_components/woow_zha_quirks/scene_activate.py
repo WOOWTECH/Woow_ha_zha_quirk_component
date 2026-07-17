@@ -133,7 +133,13 @@ async def async_setup_scene_activate(hass: HomeAssistant) -> None:
 
     @callback
     def _kick(*_: Any) -> None:
-        hass.async_create_task(_retry_loop(hass))
+        # Background task: HA does NOT wait on these when wrapping up the startup phase, so the
+        # (up to ~120s) retry loop can't block startup. getattr keeps very old HA cores working.
+        create_bg = getattr(hass, "async_create_background_task", None)
+        if create_bg is not None:
+            create_bg(_retry_loop(hass), name="woow_zha_quirks scene_activate retry")
+        else:
+            hass.async_create_task(_retry_loop(hass))
 
     @callback
     def _on_entity(event: Event) -> None:

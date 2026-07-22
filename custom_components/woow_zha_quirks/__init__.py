@@ -24,7 +24,9 @@ from homeassistant.helpers.typing import ConfigType
 
 from .knob_rebind import async_setup_knob_rebind
 from .light_effects import async_setup_light_effects
+from .orphan_sweep import async_setup_orphan_sweep
 from .presence_defaults import async_setup_presence_defaults
+from .quirk_heal import async_setup_quirk_heal
 from .relay_resync import async_setup_relay_resync
 from .scene_activate import async_setup_scene_activate
 
@@ -124,4 +126,16 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     # sensor ONCE on first pairing (persisted, so later manual changes survive restarts); plus a
     # woow_zha_quirks.apply_presence_defaults service to re-apply. See presence_defaults.py.
     await async_setup_presence_defaults(hass)
+
+    # Self-heal the ZHA-quirk load-order race: once per HA start, detect devices that
+    # match a registered woow quirk but came up quirk_applied=False (ZHA restored them
+    # before our import-time registration landed) and reload ZHA once to apply the quirk.
+    # See quirk_heal.py.
+    await async_setup_quirk_heal(hass)
+
+    # Standalone, always-on cleanup of stale "orphan" ZHA entities (old light/firmware/
+    # power-on rows left behind when a device's quirk/config changed). Independent of the
+    # heal above; gated to only ever touch dead (unavailable+restored) rows on online
+    # devices, with a two-pass stability check. See orphan_sweep.py.
+    await async_setup_orphan_sweep(hass)
     return True

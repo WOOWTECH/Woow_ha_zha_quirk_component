@@ -40,7 +40,7 @@
 
 > The **Quirk File** column shows the file under `quirks/`, named `{model}_{type}_{manuf-suffix}.py`
 > (Simon-brand devices use a `simon_{model/series}_{type}.py` variant). One file may register several
-> `(manufacturer, model)` signatures. 31 files register 42 signatures in total.
+> `(manufacturer, model)` signatures. 32 files register 43 signatures in total.
 
 | # | Device | Model | Manufacturer ID | Quirk File | HA Platform | Key Features |
 |---|--------|-------|-----------------|------------|-------------|--------------|
@@ -81,6 +81,7 @@
 | 35 | WOOW 新版單火智能開關-1開 (WO_50804_1S) | TS0011 1-Gang Switch (single-live-wire 單火) | `_TZ3000_2xmrrjir` | `ts0001_switch_TZ3000_tqlv4ug4.py` | `switch` | Single-fire 1開; device_type 0x0100→ON_OFF_OUTPUT (Light→Switch) + `TuyaZBOnOffAttributeCluster`; indicator (0x8001) and power-on (0x8002) selects **intentionally omitted** — this firmware ACKs the ZCL writes but never applies them and has no `0xEF00` DP channel over ZHA, so exposing them would be misleading non-functional controls; firmware/OTA suppressed |
 | 36 | WOOW 新版單火智能開關-3開 | TS0013 3-Gang Switch (single-live-wire 單火) | `_TZ3000_dqf2oiyz` | `ts0003_switch_TZ3000_ip6y7jj0.py` | `switch` ×3 | Single-fire twin of the 零火 3開 (`_TZ3000_ip6y7jj0`); device_type 0x0100→ON_OFF_SWITCH on all three gangs + **Tuya spell (EnchantedDeviceV2) keeps the gangs independent**; indicator/power-on selects omitted (single-fire firmware ACKs-but-ignores them, no `0xEF00` DP channel); firmware/OTA suppressed |
 | 37 | WOOW WO_40116 (MTG275-ZB-RL) | TS0601 mmWave Human-Presence Sensor + relay (ceiling 吸頂式) | `_TZE204_dtzziy1e` | `ts0601_presence_TZE204_dtzziy1e.py` | `binary_sensor` + `sensor` ×4 + `number` ×8 + `select` ×5 | Ceiling-mounted sibling of 33-WO_40117 (`_TZE204_clrdrnya`); the Tuya thing-model is byte-for-byte identical, so it **mirrors the clrdrnya DP map verbatim** (same illuminance ÷10 / entry-filter ÷100 corrections) and adds DP6 self-test + DP113 parameter-result diagnostics; inert firmware/OTA entity suppressed |
+| 38 | WOOW WO_50801_5 | TS130F Dry-Contact Curtain Module (窗簾比例模組) | `_TZ3000_9hadsgq9` | `ts130f_cover_TZ3000_9hadsgq9.py` | `cover` + `select` + `number` | Standard-ZCL WindowCovering curtain switch (the Tuya `clkg` DPs are translated to ZCL 0x0102 by the gateway MCU, so ZHA builds the cover natively); `WoowTS130FCover` swaps `up_open`↔`down_close` (this firmware runs open/close inverted while position set/report stays correct); Motor Direction select (0xF002) + Calibration Time number (0xF003 is stored in **deciseconds** → `multiplier=0.1` shows real seconds 1-900 s, 0.1 s steps, decimals supported, writable at **any** cover position unlike the app); window-covering-type + firmware/OTA entities suppressed |
 
 ---
 
@@ -722,6 +723,38 @@ DP103 (`cli`, opaque) and DP114 (`resfacset`, destructive write-only factory res
 exposed. Firmware-specific number minimums / omitted enum values are inherited from the verified
 `_TZE204_clrdrnya` sibling and are to be re-confirmed on live MTG275 hardware. The inert
 firmware/OTA `update` entity is suppressed.
+
+---
+
+### WOOW WO_50801_5 (`_TZ3000_9hadsgq9`, model `TS130F`)
+
+Dry-contact curtain (position) module — 窗簾比例模組: three potential-free relays (Open / Stop /
+Close) driving a 3/4-wire dry-contact curtain motor. Although the Tuya cloud models it as a `clkg`
+curtain switch with datapoints, on Zigbee it is a **standard ZCL `WindowCovering` (0x0102)** device
+— the gateway MCU translates the DPs ↔ ZCL — so ZHA builds a working `cover` **natively**. The
+quirk fixes the inverted open/close and surfaces the manufacturer config attributes.
+
+| Feature | Cluster | Attribute | Entity Type | Description |
+|---------|---------|-----------|-------------|-------------|
+| Cover | 0x0102 | `current_position_lift_percentage` (0x0008) + up_open / down_close / stop / go_to_lift_percentage | Standard (cover) | Open/close/stop/set_position. `WoowTS130FCover` swaps `up_open`↔`down_close` — this firmware ran them inverted (open drove to 0 %, close to 100 %) while `set_position` was correct; after the swap the buttons agree with the slider. |
+| Motor Direction | 0x0102 | `motor_reversal` (0xF002) | Config (select) | Forward / Reversed — per-install physical motor reversal. |
+| Calibration Time | 0x0102 | `calibration_time` (0xF003) | Config (number) | Full-travel time in **seconds** (1-900 s). The raw attribute is in **deciseconds** (raw 100 = 10.0 s, verified by timing), so `multiplier=0.1` converts read+write; `step=0.1` exposes the native 0.1 s granularity — **decimals are supported** (raw 105 = 10.5 s survived a restart). Writable at **any** cover position; the Tuya app's "fully close first" is a UI flow, not a firmware/ZCL constraint. |
+
+> **Live-verified 2026-07-23** on ZHA 192.168.2.6 (`quirk_applied=True`). The OnOff (0x0006)
+> attributes read `unsupported` and the Tuya DP7 `switch_backlight` has no reliable ZCL attribute on
+> this variant, so **backlight is not exposed**. Hardware-only functions with **no Zigbee
+> representation**: the board jog/latch (點動/自鎖) DIP switch, the self-powered kinetic-switch
+> receiver socket, and the momentary 4-pin external-switch inputs.
+
+**Tuya Cloud DP Map (for reference — transported as ZCL, not `0xEF00`):**
+
+| DP ID | Name | Identifier | Type | Values → ZHA |
+|-------|------|-----------|------|--------------|
+| 1 | Control | `control` | Enum | open / stop / close / continue → WindowCovering commands |
+| 2 | Position | `percent_control` | Value | 0-100 % → `current_position_lift_percentage` |
+| 7 | Backlight | `switch_backlight` | Bool | panel LED (no reliable ZCL attribute → not exposed) |
+| 8 | Motor direction | `control_back` | Enum | forward / back → `0xF002 motor_reversal` |
+| 10 | Calibration | `quick_calibration_1` | Value | 1-900 s → `0xF003 calibration_time` (deciseconds) |
 
 ---
 

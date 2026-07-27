@@ -76,19 +76,43 @@ def _safe_matches(entry: Any, zigpy_device: Any) -> bool:
         return False
 
 
-def _find_unquirked(gateway) -> list[str]:
-    """IEEEs of devices that match a registered woow quirk but are not quirk_applied.
+def _registry_lookup():
+    """Return a ``lookup(manufacturer, model) -> entries`` for the live v2 quirk registry.
 
-    Uses the singleton ``DEVICE_REGISTRY`` (the one quirks register into) and mirrors
-    zigpy's own decision via ``entry.matches_device`` (signature-only, works offline).
-    Never raises — any introspection failure degrades to "nothing to heal".
+    Tries the new ZHA registry first (HA 2026.7+: ``zha.quirks.DEVICE_REGISTRY._registry``
+    keyed by ``ModelInfo(mfr, model)``), then the legacy zigpy one (HA 2026.3:
+    ``zigpy.quirks.DEVICE_REGISTRY._registry_v2`` keyed by a ``(mfr, model)`` tuple).
+    Returns ``None`` if neither is accessible. Never raises.
     """
+    try:
+        from zha.quirks import DEVICE_REGISTRY, ModelInfo
+
+        reg = DEVICE_REGISTRY._registry
+        return lambda mfr, model: reg.get(ModelInfo(mfr, model))
+    except Exception:  # noqa: BLE001 - not HA 2026.7 / API moved; fall through to legacy
+        pass
+
     try:
         from zigpy.quirks import DEVICE_REGISTRY
 
         reg = DEVICE_REGISTRY._registry_v2
+        return lambda mfr, model: reg.get((mfr, model))
     except Exception:  # noqa: BLE001 - zigpy internals may change across versions
-        _LOGGER.debug("%s: could not access zigpy DEVICE_REGISTRY", DOMAIN)
+        _LOGGER.debug("%s: could not access any v2 quirk DEVICE_REGISTRY", DOMAIN)
+        return None
+
+
+def _find_unquirked(gateway) -> list[str]:
+    """IEEEs of devices that match a registered woow quirk but are not quirk_applied.
+
+    Uses the singleton v2 quirk registry (the one quirks register into) and mirrors ZHA's
+    own decision via ``entry.matches_device`` (signature-only, works offline). Supports
+    both the HA 2026.7 ``zha.quirks`` registry and the legacy zigpy one (see
+    ``_registry_lookup``). Never raises — any introspection failure degrades to "nothing
+    to heal".
+    """
+    lookup = _registry_lookup()
+    if lookup is None:
         return []
 
     out: list[str] = []
@@ -96,7 +120,7 @@ def _find_unquirked(gateway) -> list[str]:
         try:
             if zdev.quirk_applied:
                 continue
-            entries = reg.get((zdev.manufacturer, zdev.model))
+            entries = lookup(zdev.manufacturer, zdev.model)
             if not entries:
                 continue
             if any(_safe_matches(e, zdev.device) for e in entries):

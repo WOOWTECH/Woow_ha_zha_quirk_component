@@ -112,9 +112,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     # report its boot state and ZHA doesn't re-read on rejoin). See relay_resync.py.
     await async_setup_relay_resync(hass)
 
-    # Activate the 7-58E8021 / 12-70E8306 scene-switch buttons (store a scene in group 0x270f +
-    # bind their output OnOff to the coordinator) so a physical press emits OnOff cmd 0xFB, which
-    # ScenePressOnOffCluster catches → toggles the HA switch. See scene_activate.py.
+    # Activate the 7-58E8021 / 12-70E8306 scene-switch buttons (join group 0x270f, store a scene
+    # in it, bind their output OnOff to the coordinator) so a physical press emits OnOff cmd 0xFB,
+    # which ScenePressOnOffCluster catches → toggles the HA switch. See scene_activate.py.
     await async_setup_scene_activate(hass)
 
     # Expose the Gledopto GL-SPI-206P (_TZE284_gt5al3bl) 44 dreamlight scenes as

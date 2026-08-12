@@ -541,7 +541,9 @@ Standard ZCL 4-gang scene+switch panel used as **plain switches**. `device_type`
 |---------|---------|-----------|-----|-------------|-------------|
 | Switch (per gang) | 0x0006 | `on_off` | 1-4 | Standard | Gang 1-4 On/Off (native ZCL; a physical press emits an OnOff report, no scene pulse) |
 | Indicator Mode | 0x0006 | `backlight_mode` (0x8001) | 1 | Config (`select`) | Switch Status (0) / Switch Position (1) / Close (2) |
-| Gang mode | 0xE001 | `gang_mode` (0xD020) | 1-4 | — (internal, not exposed) | Per-gang Switch (0, relay) / Scene (1, trigger). The quirk writes `0` on the first frame (`_ensure_switch_mode()`) so the indicator LED works (LED only lights in Switch mode) |
+| Gang mode | 0xE001 | `gang_mode` (0xD020) | 1-4 | — (internal, not exposed) | Per-gang Switch (0) / Scene (1, trigger). The quirk writes `0` on the first frame (`_ensure_switch_mode()`) so the indicator LED works (LED only lights in Switch mode) |
+
+This panel has **no load output terminals** (L/N supply only), so "Switch mode" drives an internal firmware latch — nothing physical is switched. That is what makes Switch mode the right choice: it is free, and the latch's state change is what forces the firmware to report **every** press immediately. In Scene mode the latch is not driven at all, so presses produce nothing usable (measured: 5 presses → ~1 report, on a ~5 min periodic timer). **Press → HA** therefore works with no group, scene, or binding: press → immediate `on_off` report → the gang's `switch` entity changes state → trigger an HA automation on that state change.
 
 Each physical press sends the OnOff report **twice** (~0.3 s apart). StartUpOnOff ×4 + firmware ×4 suppressed. After an HA restart the quirk may not apply immediately — reload the ZHA integration if so. Live-verified on `7c:c6:b6:ff:fe:82:46:64`.
 
@@ -570,7 +572,7 @@ Standard ZCL 2-gang scene switch (NOT Tuya MCU). EP1 & EP2 each carry an OnOff c
 | Indicator Mode | 0x0006 (server) | `backlight_mode` (0x8001) | 1 | Config (`select`) | Close (0) / Switch Status (1) / Switch Position (2) |
 | Physical press | 0x0006 (client) | cmd `0xFB` | 1, 2 | — (drives server toggle) | `ScenePressOnOffCluster` catches the press command and toggles the same endpoint's server OnOff so HA follows |
 
-`OnOff` is replaced with `TuyaZBOnOffAttributeCluster` (superset) to surface `backlight_mode`. Dead StartUpOnOff selects and firmware/OTA suppressed. Scene storage/activation logic lives separately in `scene_activate.py`. Verified via gateway sniff (IEEE `6c:e4:a4:ff:fe:c4:c7:16`).
+`OnOff` is replaced with `TuyaZBOnOffAttributeCluster` (superset) to surface `backlight_mode`. Dead StartUpOnOff selects and firmware/OTA suppressed. The press-enablement handshake (join group `0x270f` → store scene `0xff` → bind the output OnOff to the coordinator) lives separately in `scene_activate.py`; without it the firmware stays silent on a press. Verified via gateway sniff (IEEE `6c:e4:a4:ff:fe:c4:c7:16`).
 
 ---
 
@@ -888,9 +890,9 @@ Woow_ha_zha_quirk_component/
 │   └── woow_zha_quirks/
 │       ├── __init__.py                                     # Auto-loader (pkgutil.walk_packages)
 │       ├── manifest.json                                   # HA component manifest
-│       ├── services.yaml                                   # Service definitions (rebind_knob, apply_presence_defaults)
+│       ├── services.yaml                                   # Service definitions (activate_scene_switches, rebind_knob, apply_presence_defaults)
 │       ├── climate.py                                      # HA-core climate platform (SM0308F/SM0308C wrappers)
-│       ├── scene_activate.py                               # Scene AddScene hook (TS0034/TS0022 press → HA)
+│       ├── scene_activate.py                               # Press-enablement hook: group+scene+bind (TS0034/TS0022 press → HA)
 │       ├── knob_rebind.py                                  # Auto group-bind + rebind_knob service (58E8017 knob)
 │       ├── relay_resync.py                                 # Relay state re-sync helper (21-TYZGTH1CH-D1RF)
 │       ├── light_effects.py                                # Runtime patch adding 44 scene effects (GL-SPI-206P)
@@ -932,6 +934,7 @@ Woow_ha_zha_quirk_component/
 │           ├── ts110d_dimmer_TZ3210_1znecg8a.py            # Simon 15-66E8015 — TS110D 1-gang dimmer
 │           └── tuya_cover_nogaemzt.py                      # Tuya curtain track motor
 │
+├── CONTEXT.md                                              # Domain glossary (the four meanings of "scene", gang/gang-mode, …)
 ├── hacs.json                                               # HACS metadata
 ├── LICENSE                                                 # MIT License
 └── README.md                                               # This file

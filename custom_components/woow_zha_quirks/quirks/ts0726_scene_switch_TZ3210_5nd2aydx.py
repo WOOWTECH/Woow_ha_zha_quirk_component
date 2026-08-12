@@ -36,9 +36,13 @@ This file:
   1. Removes the phantom EP9, then replaces OnOff on EP1-8 with
      WoowForceSwitchOnOffCluster (a TuyaZBOnOffAttributeCluster that also forces the
      gang into Switch/relay mode — see below); on/off switching is unaffected.
-  2. FORCES every gang into Switch (relay) mode. Each gang can be a relay
-     (``switch``) or a scene trigger (``scene``); in scene mode the relay is
-     disabled and the switch entity is inert. To guarantee every switch entity is a
+  2. FORCES every gang into Switch mode. Each gang can be a ``switch`` or a scene
+     trigger (``scene``); in scene mode presses do not drive the gang's internal latch,
+     so the switch entity is inert and no usable press signal reaches HA. This panel has
+     no load output terminals, so Switch mode switches nothing physical — it is free, and
+     it is what makes press-to-HA work (press -> immediate on_off report -> switch entity
+     state change -> HA automation). See docs/adr/0001-press-to-ha-via-coordinator.md.
+     To guarantee every switch entity is a
      *regular switch*, the OnOff cluster writes 0xE001 ``gang_mode`` = Switch on the
      first frame after startup (retried until it lands). The device persists the
      setting, so this is permanent and self-heals after any drift/re-pair. The
@@ -131,10 +135,13 @@ class WoowSceneSwitchE001Cluster(TuyaZBExternalSwitchTypeCluster):
 
 
 class WoowForceSwitchOnOffCluster(TuyaZBOnOffAttributeCluster):
-    """OnOff server that forces this gang into Switch (relay) mode.
+    """OnOff server that forces this gang into Switch mode.
 
-    A gang can be a relay (``switch``) or a scene trigger (``scene``); in scene
-    mode the relay is disabled and the switch entity is inert. To guarantee every
+    A gang can be a ``switch`` or a scene trigger (``scene``); in scene mode the gang's
+    internal latch is not driven by presses, so the switch entity is inert and no usable
+    press signal reaches HA. (This panel has no load output terminals, so "switch" means
+    an internal firmware latch — nothing physical is switched either way, which is what
+    makes holding every gang in Switch mode free.) To guarantee every
     switch entity is a *regular switch*, on the first frame from the device we write
     the sibling 0xE001 ``gang_mode`` to Switch when it isn't already (retried on the
     next frame if the write fails). The device persists the value, so one success is

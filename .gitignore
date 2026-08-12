@@ -13,3 +13,6 @@ private/
 sniffer-related/
 docs/*
 !docs/img/
+
+# CLAUDE.md
+CLAUDE.md

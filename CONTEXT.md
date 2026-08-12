@@ -69,6 +69,40 @@ A panel's backlight LED behaviour setting (attribute 0x8001 on cluster 0x0006). 
 differ between models even within one Tuya model number.
 _Avoid_: backlight mode, LED mode
 
+### Settings that do not stick
+
+Two firmware failures look identical from Home Assistant — a setting that "does not work" — and they
+have opposite remedies. Never say a setting is "not saved" without saying which of these it is.
+
+**Volatile Setting**:
+A device setting the firmware accepts and genuinely applies, then discards on a power cycle — without
+reporting the reset and without announcing its return. Only Volatile Settings are worth converging.
+_Avoid_: non-persistent setting, transient setting
+
+**Inert Setting**:
+A device setting the firmware accepts and reads back as the written value, but never acts on
+(`StartUpOnOff` on several of our devices). The remedy is to remove the control, not to write it
+again; writing it repeatedly is busywork that looks like a fix.
+_Avoid_: broken setting, unsupported attribute — the attribute is supported, it is merely ignored
+
+**Desired Indicator Mode**:
+The Indicator Mode value the user last successfully wrote, remembered separately from whatever the
+device currently reports. It is the only record of user intent: the device's own value cannot stand in
+for it, because reading the device replaces what it would have told us.
+_Avoid_: expected value, target mode, cached value
+
+**Convergence**:
+One round of reading a Volatile Setting's true value from a device, comparing it against the desired
+value, and writing the desired value back when the two differ. Reading is part of the definition — a
+mechanism that only writes cannot tell a successful write from a silently rejected one.
+_Avoid_: sync, restore, re-apply
+
+**Adopt**:
+To record a device's current value as the desired value. Happens both when the user changes a setting
+(the new value is read back from the device and adopted) and when an already-configured device's
+existing value should be taken as intent.
+_Avoid_: learn, capture
+
 ### Device shape
 
 **Quirk**:

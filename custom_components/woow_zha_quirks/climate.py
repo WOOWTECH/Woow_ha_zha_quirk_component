@@ -187,10 +187,21 @@ async def async_setup_platform(
                 (val for typ, val in device.connections if typ == dr.CONNECTION_ZIGBEE),
                 None,
             )
+            if not ieee:
+                continue
+            # A disabled device has no live ZHA entities, and HA stamps disabled_by=DEVICE on
+            # every entity attached to it. Building the climate now would occupy the `created`
+            # guard below (so the later "Enable device" would never rebuild it) and leave our
+            # own registry row disabled. Wait instead — enabling the device fires a
+            # device-registry update, which calls us straight back. Drop any stale guard so
+            # that rebuild is not skipped.
+            if device.disabled_by is not None:
+                created.pop(ieee, None)
+                continue
             # Skip only if THIS exact device entry already has its climate. A re-paired
             # device usually gets a new device.id, so a stale (ieee -> old id) entry no
             # longer matches and we rebuild below.
-            if not ieee or created.get(ieee) == device.id:
+            if created.get(ieee) == device.id:
                 continue
 
             entries = er.async_entries_for_device(
@@ -211,17 +222,16 @@ async def async_setup_platform(
                 )
                 continue
 
-            # Drop a stale climate registry entry left by a previous device entry for
-            # this IEEE (re-pair), so re-adding with the same unique_id can't collide.
-            stale_eid = ent_reg.async_get_entity_id("climate", DOMAIN, f"{ieee}-climate")
-            if stale_eid is not None:
-                stale_entry = ent_reg.async_get(stale_eid)
-                if stale_entry is not None and stale_entry.device_id != device.id:
-                    ent_reg.async_remove(stale_eid)
-
-            created[ieee] = device.id
-            _hide_backing(ent_reg, entries)
             dev_name = device.name_by_user or device.name or f"{spec.model} {ieee}"
+            # Claim the guard FIRST: _prepare_registry_row() below can create the registry row,
+            # and the registry fires its "create" event synchronously -- straight into our own
+            # _on_entity_added listener. Without the guard already set, that re-entrant
+            # _discover() would build a second WoowClimate for the same unique_id.
+            created[ieee] = device.id
+            # Create/restore and repair our registry row BEFORE the entity is added -- see
+            # _prepare_registry_row for why this can't be left to async_added_to_hass.
+            _prepare_registry_row(ent_reg, ieee, device.id, _object_id(dev_name))
+            _hide_backing(ent_reg, entries)
             new_entities.append(WoowClimate(hass, spec, ieee, roles, device.id, dev_name))
             _LOGGER.info(
                 "WOOW ZHA Quirks: created climate for %s %s", spec.model, ieee
@@ -242,6 +252,54 @@ async def async_setup_platform(
     async_at_start(hass, _discover)
     hass.bus.async_listen(dr.EVENT_DEVICE_REGISTRY_UPDATED, _discover)
     hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, _on_entity_added)
+
+
+def _object_id(device_name: str) -> str:
+    """Object id for the climate: device name minus the internal "N-" index prefix.
+
+    e.g. "14-66E7109TY" -> "66e7109ty", "8-58E7101" -> "58e7101". Only takes effect on first
+    creation; an existing registry row keeps whatever entity_id it already has.
+    """
+    return slugify(re.sub(r"^\d+[-_\s]+", "", device_name)) or slugify(device_name)
+
+
+@callback
+def _prepare_registry_row(
+    ent_reg: er.EntityRegistry, ieee: str, device_id: str, object_id: str
+) -> None:
+    """Create/restore this climate's registry row and repair its device link + disabled flag.
+
+    This must happen *before* async_add_entities(): a row that comes back disabled is skipped
+    there, so the entity is never added and async_added_to_hass() -- the only other place that
+    restores the device link -- never runs. That state then survives every restart.
+
+    Two shapes need repairing:
+
+    * A row left by a *previous* device entry for this IEEE (a re-pair usually yields a new
+      device.id). It is re-pointed, not removed: async_remove() would merely move the row into
+      deleted_entities, and the immediate re-add restores it verbatim -- including the very flags
+      we are trying to shed -- while dropping device_id. (Removing also produced the "_2"
+      entity-id suffix, because the old entity_id was still in use at that moment.)
+    * A row restored from deleted_entities. async_get_or_create() brings back disabled_by and
+      hidden_by but NOT device_id, so "disable -> delete while disabled -> re-pair" yields
+      disabled_by=DEVICE with device_id=None. "Enable device" only clears the DEVICE flag on
+      entities whose device_id matches that device, so nothing would ever clear it again.
+
+    Only the automatic DEVICE flag is cleared here; a user's own disable is left untouched.
+    """
+    entry = ent_reg.async_get_or_create(
+        "climate", DOMAIN, f"{ieee}-climate", suggested_object_id=object_id
+    )
+    updates: dict[str, Any] = {}
+    if entry.device_id != device_id:
+        updates["device_id"] = device_id
+    if entry.disabled_by is er.RegistryEntryDisabler.DEVICE:
+        updates["disabled_by"] = None
+    if updates:
+        _LOGGER.debug(
+            "WOOW ZHA Quirks: repairing climate registry row %s: %s", entry.entity_id, updates
+        )
+        ent_reg.async_update_entity(entry.entity_id, **updates)
 
 
 @callback
@@ -299,11 +357,7 @@ class WoowClimate(ClimateEntity, RestoreEntity):
         self._attr_max_temp = spec.max_temp
         self._attr_target_temperature_step = spec.temp_step
 
-        # Clean entity_id: drop the internal "N-" index prefix from the device name
-        # (e.g. "14-66E7109TY" -> "66e7109ty", "8-58E7101" -> "58e7101"). Only takes
-        # effect on first creation; an existing registry entry keeps its entity_id.
-        object_id = slugify(re.sub(r"^\d+[-_\s]+", "", device_name)) or slugify(device_name)
-        self.entity_id = f"climate.{object_id}"
+        self.entity_id = f"climate.{_object_id(device_name)}"
         self._attr_unique_id = f"{ieee}-climate"
         self._attr_hvac_mode = HVACMode.OFF
         self._attr_fan_mode: str | None = None

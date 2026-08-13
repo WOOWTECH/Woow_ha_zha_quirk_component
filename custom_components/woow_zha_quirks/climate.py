@@ -178,6 +178,7 @@ async def async_setup_platform(
         ent_reg = er.async_get(hass)
         dev_reg = dr.async_get(hass)
         new_entities: list[WoowClimate] = []
+        _LOGGER.debug("discover: running, live climates=%s", created)
 
         for device in list(dev_reg.devices.values()):
             spec = by_key.get((device.manufacturer, device.model))
@@ -196,6 +197,10 @@ async def async_setup_platform(
             # device-registry update, which calls us straight back. Drop any stale guard so
             # that rebuild is not skipped.
             if device.disabled_by is not None:
+                _LOGGER.debug(
+                    "discover: %s %s device disabled_by=%s; dropping guard and waiting",
+                    spec.model, ieee, device.disabled_by,
+                )
                 created.pop(ieee, None)
                 continue
             entries = er.async_entries_for_device(
@@ -212,7 +217,8 @@ async def async_setup_platform(
             missing = spec.required_roles - set(roles)
             if missing:
                 _LOGGER.debug(
-                    "%s %s not ready (missing %s); will retry", spec.model, ieee, missing
+                    "%s %s not ready (missing %s, resolved %s); will retry",
+                    spec.model, ieee, missing, roles,
                 )
                 continue
 
@@ -224,7 +230,14 @@ async def async_setup_platform(
             # async_will_remove_from_hass never fires). A re-pair usually restores the very same
             # device.id, so the guard alone would skip the device forever.
             if ieee in created:
-                if (row := _existing_row(ent_reg, ieee)) is not None:
+                row = _existing_row(ent_reg, ieee)
+                _LOGGER.debug(
+                    "discover: %s %s guard hit (created=%s, device=%s, row=%s, live_state=%s)",
+                    spec.model, ieee, created.get(ieee), device.id,
+                    row.entity_id if row is not None else None,
+                    hass.states.get(row.entity_id) is not None if row is not None else None,
+                )
+                if row is not None:
                     _repair_row(ent_reg, row, device.id)
                 created[ieee] = device.id
                 _hide_backing(ent_reg, entries)
@@ -254,6 +267,9 @@ async def async_setup_platform(
         # what we were waiting for on a fresh pair — the device-registry events alone
         # can fire before the entities are registered. Only react to new entities.
         if event.data.get("action") == "create":
+            _LOGGER.debug(
+                "entity registry create: %s; re-running discover", event.data.get("entity_id")
+            )
             _discover()
 
     # discover at startup (ZHA entities exist by then) and on later device/entity changes
@@ -411,6 +427,9 @@ class WoowClimate(ClimateEntity, RestoreEntity):
             except ValueError:
                 pass
 
+        _LOGGER.debug(
+            "%s added_to_hass: subscribing to %s", self.entity_id, self._ent
+        )
         self.async_on_remove(
             async_track_state_change_event(
                 self.hass, list(self._ent.values()), self._async_backing_changed
@@ -425,12 +444,22 @@ class WoowClimate(ClimateEntity, RestoreEntity):
         from the shared map lets _discover() recreate the climate on the next pair
         without needing an HA restart.
         """
+        _LOGGER.debug(
+            "%s will_remove_from_hass: dropping guard for %s", self.entity_id, self._ieee
+        )
         created: dict[str, str] = self.hass.data.get(DATA_CREATED, {})
         created.pop(self._ieee, None)
         await super().async_will_remove_from_hass()
 
     @callback
-    def _async_backing_changed(self, _event: Event) -> None:
+    def _async_backing_changed(self, event: Event) -> None:
+        new = event.data.get("new_state")
+        _LOGGER.debug(
+            "%s backing changed: %s -> %s",
+            self.entity_id,
+            event.data.get("entity_id"),
+            "<removed>" if new is None else new.state,
+        )
         self._recompute()
         self.async_write_ha_state()
 
@@ -475,6 +504,22 @@ class WoowClimate(ClimateEntity, RestoreEntity):
                 self._attr_current_temperature = float(cur) / self._spec.current_temp_divisor
             except ValueError:
                 pass
+
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            # Distinguish "<missing>" (entity not in the state machine at all -- ZHA is
+            # rebuilding it) from the literal "unavailable" string (ZHA says the device is
+            # unreachable). _state() collapses both to None, which is exactly the ambiguity
+            # under investigation.
+            snap = {
+                role: "<missing>" if (st := self.hass.states.get(eid)) is None else st.state
+                for role, eid in self._ent.items()
+            }
+            _LOGGER.debug(
+                "%s recompute: backing=%s -> hvac_mode=%s fan=%s preset=%s target=%s current=%s",
+                self.entity_id, snap, self._attr_hvac_mode, self._attr_fan_mode,
+                self._attr_preset_mode, self._attr_target_temperature,
+                self._attr_current_temperature,
+            )
 
     @property
     def hvac_action(self) -> HVACAction:

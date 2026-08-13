@@ -198,12 +198,6 @@ async def async_setup_platform(
             if device.disabled_by is not None:
                 created.pop(ieee, None)
                 continue
-            # Skip only if THIS exact device entry already has its climate. A re-paired
-            # device usually gets a new device.id, so a stale (ieee -> old id) entry no
-            # longer matches and we rebuild below.
-            if created.get(ieee) == device.id:
-                continue
-
             entries = er.async_entries_for_device(
                 ent_reg, device.id, include_disabled_entities=True
             )
@@ -220,6 +214,20 @@ async def async_setup_platform(
                 _LOGGER.debug(
                     "%s %s not ready (missing %s); will retry", spec.model, ieee, missing
                 )
+                continue
+
+            # An entity for this IEEE is already live (whatever device entry it was built for),
+            # so never build a second one for the same unique_id -- just re-attach it to the
+            # current device entry. Deleting a ZHA device does NOT tear our climate down: our
+            # row has no config entry, so HA only nulls its device_id, which leaves the entity
+            # running but detached from the device card (and leaves `created` populated, since
+            # async_will_remove_from_hass never fires). A re-pair usually restores the very same
+            # device.id, so the guard alone would skip the device forever.
+            if ieee in created:
+                if (row := _existing_row(ent_reg, ieee)) is not None:
+                    _repair_row(ent_reg, row, device.id)
+                created[ieee] = device.id
+                _hide_backing(ent_reg, entries)
                 continue
 
             dev_name = device.name_by_user or device.name or f"{spec.model} {ieee}"
@@ -264,6 +272,33 @@ def _object_id(device_name: str) -> str:
 
 
 @callback
+def _existing_row(ent_reg: er.EntityRegistry, ieee: str) -> er.RegistryEntry | None:
+    """This climate's registry row, or None if it has never been registered."""
+    eid = ent_reg.async_get_entity_id("climate", DOMAIN, f"{ieee}-climate")
+    return ent_reg.async_get(eid) if eid is not None else None
+
+
+@callback
+def _repair_row(
+    ent_reg: er.EntityRegistry, entry: er.RegistryEntry, device_id: str
+) -> None:
+    """Re-attach our row to its device and shed a stale automatic disable flag.
+
+    Only the automatic DEVICE flag is cleared; a user's own disable is left untouched.
+    """
+    updates: dict[str, Any] = {}
+    if entry.device_id != device_id:
+        updates["device_id"] = device_id
+    if entry.disabled_by is er.RegistryEntryDisabler.DEVICE:
+        updates["disabled_by"] = None
+    if updates:
+        _LOGGER.info(
+            "WOOW ZHA Quirks: repairing climate registry row %s: %s", entry.entity_id, updates
+        )
+        ent_reg.async_update_entity(entry.entity_id, **updates)
+
+
+@callback
 def _prepare_registry_row(
     ent_reg: er.EntityRegistry, ieee: str, device_id: str, object_id: str
 ) -> None:
@@ -284,22 +319,11 @@ def _prepare_registry_row(
       hidden_by but NOT device_id, so "disable -> delete while disabled -> re-pair" yields
       disabled_by=DEVICE with device_id=None. "Enable device" only clears the DEVICE flag on
       entities whose device_id matches that device, so nothing would ever clear it again.
-
-    Only the automatic DEVICE flag is cleared here; a user's own disable is left untouched.
     """
     entry = ent_reg.async_get_or_create(
         "climate", DOMAIN, f"{ieee}-climate", suggested_object_id=object_id
     )
-    updates: dict[str, Any] = {}
-    if entry.device_id != device_id:
-        updates["device_id"] = device_id
-    if entry.disabled_by is er.RegistryEntryDisabler.DEVICE:
-        updates["disabled_by"] = None
-    if updates:
-        _LOGGER.debug(
-            "WOOW ZHA Quirks: repairing climate registry row %s: %s", entry.entity_id, updates
-        )
-        ent_reg.async_update_entity(entry.entity_id, **updates)
+    _repair_row(ent_reg, entry, device_id)
 
 
 @callback

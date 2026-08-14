@@ -71,8 +71,10 @@ _Avoid_: backlight mode, LED mode
 
 ### Settings that do not stick
 
-Two firmware failures look identical from Home Assistant — a setting that "does not work" — and they
-have opposite remedies. Never say a setting is "not saved" without saying which of these it is.
+Three firmware failures look identical from Home Assistant — a setting that "does not work" — and
+they have different remedies. Never say a setting is "not saved" without saying which of these it is.
+Misclassifying one of these as another has already cost this project a wrong conclusion and a
+feature that was removed while it was in fact working.
 
 **Volatile Setting**:
 A device setting the firmware accepts and genuinely applies, then discards on a power cycle — without
@@ -82,8 +84,30 @@ _Avoid_: non-persistent setting, transient setting
 **Inert Setting**:
 A device setting the firmware accepts and reads back as the written value, but never acts on
 (`StartUpOnOff` on several of our devices). The remedy is to remove the control, not to write it
-again; writing it repeatedly is busywork that looks like a fix.
+again; writing it repeatedly is busywork that looks like a fix. Before calling anything inert, rule
+out an Uncommitted Setting: the two are indistinguishable from the traffic alone, and only one of
+them justifies removing the control.
 _Avoid_: broken setting, unsupported attribute — the attribute is supported, it is merely ignored
+
+**Uncommitted Setting**:
+A device setting whose stored value and acted-on value are two different things inside the firmware.
+A write updates the stored one — SUCCESS, an echoed report, a correct read-back, survival across a
+mains power cycle — while the device keeps acting on the value it last committed. The remedy is to
+satisfy the Commit Condition, not to remove the control.
+_Avoid_: inert setting (opposite remedy), not saved, ignored write
+
+**Commit Condition**:
+What a write must satisfy before the firmware replaces the committed value with the stored one. It is
+device-specific, undocumented, and found by comparing our traffic against a Tuya gateway's: on the
+66E8015 dimmer, min and max brightness must arrive within about a second of each other. A control
+backed by an Uncommitted Setting is only correct once its quirk guarantees this.
+_Avoid_: magic spell (that is a join-time handshake, a different thing), activation
+
+**Read-Back Trap**:
+Concluding that a setting works because the device returns the value that was written. On an
+Uncommitted Setting the read reports storage, so it agrees with the write no matter what the device
+is actually doing. The only honest test is to make the device act and observe the result.
+_Avoid_: verified, confirmed stored — say which of the two was confirmed
 
 **Desired Indicator Mode**:
 The Indicator Mode value the user last successfully wrote, remembered separately from whatever the

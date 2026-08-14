@@ -47,45 +47,68 @@ LevelControl subclass (NOT F000LevelControlCluster) for the reasons in (1) above
 Quirk adds / fixes:
   1. Reliable on/off + brightness via standard ZCL, with 0xF000->current_level
      read mirroring.
-  2. Min / Max brightness (0xFC03 / 0xFC04) as READ-ONLY diagnostic sensors in
-     percent. They are NOT writable config numbers — see "Min/max are inert"
-     below. The raw 1..255 value is converted to percent in the cluster's get()
-     and rounded to the nearest integer % (a ZHA `multiplier` would leave an
-     unrounded float like 52.94117647 % in the state).
+  2. Min / Max brightness (0xFC03 / 0xFC04) as writable config numbers in
+     percent, always written as a pair — see "Min/max only commit when written
+     as a pair" below.
   3. Indicator (backlight) LED mode select (OnOff 0x8001) — labels mapped to the
      app's DP102 (none / enable_white / enable_yellow).
   4. Suppress the useless default LevelControl config entities and the raw
      manufacturer-attribute auto-entities.
   5. Remove both power-on selects (standard StartUpOnOff + Tuya power_on_state).
 
-Min/max are inert — why they are sensors, not numbers (issue #3)
----------------------------------------------------------------
-0xFC03 / 0xFC04 are writable in the ZCL sense — the device answers every write
-with SUCCESS, echoes the new value back in an unsolicited report, and persists
-it across a mains power cycle — but the firmware never *acts* on the stored
-value. Measured on hardware with 0xFC03 = 128 (50 %) and 0xFC04 = 178 (70 %):
+Min/max only commit when written as a pair (issue #3)
+----------------------------------------------------
+0xFC03 / 0xFC04 are ordinary writable uint16 attributes: every write is answered
+SUCCESS, echoed back in an unsolicited report, read back correctly from the
+device, and persisted across a mains power cycle. None of that means the
+firmware is using the value. It keeps a separate *committed* window, and only
+replaces it when it receives min and max close together. A lone write, or a
+pair more than about a second apart, updates storage and leaves the committed
+window untouched — the device goes on clamping to the previous one.
 
-    commanded level  40 ->  77     200 -> 200
-                     60 ->  77     254 -> 254
+Measured directly, lamp on throughout, nothing else varied (2026-08-14):
 
-The floor sits at 77 and there is no ceiling at all — i.e. the factory 77/255,
-regardless of what is stored. Physical wall dimming sweeps the same 77..255.
-These were eliminated as explanations:
+    write 0xFC03=102 then 0xFC04=204, 2.5 s apart
+        stored 102/204   commanded 40 -> 51, 254 -> 230   (previous window!)
+    write 0xFC03=64  then 0xFC04=242, 0.1 s apart
+        stored  64/242   commanded 40 -> 64, 254 -> 242   (committed)
 
-  - Tuya "attribute read" spell (BaseEnchantedDevice) — cast and verified on
-    the wire, no change.
-  - OnOff off->on cycle, ZHA restart, mains power cycle — no change.
-  - The Tuya 0xEF00 DP path — the device does expose 0xEF00 on EP1, but the
-    Tuya gateway never used it for min/max in any capture; it wrote the same
-    0xFC03/0xFC04 and drove level with the private 0x00F0 command.
+This quirk therefore always sends both attributes in ONE frame, which is
+strictly tighter than the ~100 ms pair the Tuya gateway sends and needs no
+timing luck. Once committed the window survives an OnOff cycle and a 10 s mains
+outage; a re-pair puts the device back on the factory 77/255.
 
-Notably the limits *did* work while the unit was paired to the Tuya gateway
-(wall dimming floored/ceilinged exactly as configured). The only difference is
-the factory reset performed when putting the panel into pairing mode, so the
-feature appears to be dormant until whatever provisioning the Tuya gateway does
-at join. Until that is identified, exposing writable controls that silently do
-nothing is worse than exposing none, so both are read-only sensors — the same
-conclusion the TS0052 quirk reached for its standard MinLevel/MaxLevel.
+That single rule explains the entire history of this bug. The Tuya app always
+worked because the gateway writes the pair ~100 ms apart and repeats it three
+times. Every ZHA test that ever "proved" the attributes were inert — including
+the ones in issue #3 that led to demoting them to read-only sensors — wrote the
+two attributes about 1.5 s apart.
+
+Do not be fooled by a read-back: reading 0xFC03/0xFC04 from the device returns
+the stored value, not the committed one, so the two can disagree indefinitely.
+The only honest test is to command a level and see where it lands.
+
+Everything below was tested and is NOT the gate. Do not re-litigate without new
+evidence; all of it is on the wire in captures/ts110d_mfgcode_ch25.pcap:
+
+  - Tuya "attribute read" spell (BaseEnchantedDevice) — no effect.
+  - The Tuya gateway's join handshake replayed frame for frame, on a fresh join
+    (single-frame six-attribute spell, Basic 0xFFDE write, Basic cmd 0xF0, the
+    0xFEFE-bearing cluster probes, the duplicated probe round, the trailing
+    Basic 0x0001 read) — no effect.
+  - The coordinator's ZDO manufacturer code. The device really does send
+    Node_Desc_req to 0x0000 on every join, and the Tuya gateway answers 0x1049
+    where zigpy answers 0xABCD — but making an EmberZNet NCP answer 0x1049
+    (EZSP frame 0x15, confirmed on the wire) changed nothing, and the limits
+    work with the stock 0xABCD.
+  - The lamp being on or off at write time. It looked decisive for one round of
+    testing and is not: a pair written 0.1 s apart commits with the lamp off,
+    and a pair written 2.5 s apart fails to commit with the lamp on.
+  - OnOff off->on cycle, ZHA restart, mains power cycle, factory reset — no
+    effect. The Tuya gateway is equally factory-reset at pairing and its limits
+    work, so the reset was never the difference either.
+  - The Tuya 0xEF00 DP path — the device exposes 0xEF00 on EP1, but the gateway
+    never used it for min/max; it wrote the same 0xFC03/0xFC04.
 
 NOTE: the real bulb-type attribute (0xFC01 vs 0xFC02) is unresolved — 0xFC02
 reads as unsupported on this variant, so bulb/dimming-mode attrs are declared
@@ -157,6 +180,7 @@ class TS110DLevelControl(CustomCluster, LevelControl):
          "manufacturer_min_level", "manufacturer_max_level"}
     )
 
+
     def _update_attribute(self, attrid, value):
         """Mirror Tuya 0xF000 brightness reports onto standard current_level.
 
@@ -177,23 +201,71 @@ class TS110DLevelControl(CustomCluster, LevelControl):
     def get(self, key, default=None):
         """Show raw 1..255 min/max brightness as a nearest-integer percent.
 
-        ZHA's sensor entity uses cluster.get(); returning a pre-rounded int
+        ZHA's number entity uses cluster.get(); returning a pre-rounded int
         percent makes the entity *state* a whole number instead of the long
         float produced by raw * (100/255). round() with no ndigits returns an
-        int.
-
-        There is deliberately no matching write_attributes() percent
-        conversion. The min/max attributes back read-only sensors now (see the
-        module docstring), so nothing in HA writes them. Keeping a percent-
-        interpreting write path with no writer would only trap anyone reaching
-        for zha.set_zigbee_cluster_attribute, where the natural thing to pass
-        is the raw 1..255 value the device actually stores; writes through that
-        service now mean exactly what they say.
+        int. write_attributes() converts the other way.
         """
         if key in self._PCT_ATTRS:
             raw = super().get(key, None)
             return default if raw is None else round(raw * 100 / 255)
         return super().get(key, default)
+
+    async def write_attributes(self, attributes, manufacturer=None, **kwargs):
+        """Write min/max as a raw 1..255 PAIR, in one frame.
+
+        Two things happen here:
+
+          - percent -> raw, rounding half UP (int(v * 255 / 100 + 0.5)) rather
+            than Python's round(), which is half-to-even and disagrees with the
+            Tuya gateway on exact .5 values: 30 % is 77 on the gateway and 76
+            under round().
+          - min and max are always sent together. The firmware only *commits* a
+            new window when it receives both close together; a lone write (or a
+            pair spread more than about a second apart) is acknowledged, stored
+            and read back correctly while the previously committed window stays
+            in force. Measured directly -- see the module docstring. Putting
+            both in a single frame makes the commit unconditional and is
+            strictly tighter than the ~100 ms pair the Tuya gateway sends.
+        """
+        converted = {}
+        touches_limits = False
+        for key, value in attributes.items():
+            if key in self._PCT_ATTRS and isinstance(value, (int, float)):
+                raw = int(value * 255 / 100 + 0.5)
+                converted[key] = max(1, min(255, raw))
+                touches_limits = True
+            else:
+                converted[key] = value
+
+        if touches_limits:
+            await self._complete_limit_pair(converted)
+
+        return await super().write_attributes(converted, manufacturer, **kwargs)
+
+    async def _complete_limit_pair(self, converted: dict) -> None:
+        """Add whichever of min/max is missing, so both go out in one frame."""
+        for attr_id, name in (
+            (TUYA_MIN_LEVEL, "manufacturer_min_level"),
+            (TUYA_MAX_LEVEL, "manufacturer_max_level"),
+        ):
+            if attr_id in converted or name in converted:
+                continue
+            raw = self._attr_cache.get(attr_id)
+            if raw is None:
+                try:
+                    success, _ = await super().read_attributes([attr_id])
+                    raw = success.get(attr_id)
+                except Exception as exc:  # noqa: BLE001 - degrade, do not fail the write
+                    self.debug("could not read %#06x to pair the write (%s)", attr_id, exc)
+            if raw is None:
+                self.debug(
+                    "writing %#06x alone: its partner is unknown, so the firmware "
+                    "may store the value without committing it",
+                    attr_id,
+                )
+                continue
+            converted[name] = raw
 
 
 class TS110DBacklightMode(t.enum8):
@@ -263,23 +335,32 @@ class TS110DBacklightMode(t.enum8):
         translation_key="backlight_mode",
         fallback_name="Indicator Mode",
     )
-    # ── Min brightness (0xFC03) — READ-ONLY diagnostic sensor, percent ──
-    .sensor(
+    # ── Min brightness (0xFC03) — writable, percent. The device stores 1..255;
+    #    TS110DLevelControl converts both ways and always sends min+max in one
+    #    frame, because the firmware only commits a window it receives as a
+    #    pair (issue #3). ──
+    .number(
         TS110DLevelControl.AttributeDefs.manufacturer_min_level.name,
         LEVEL,
         endpoint_id=1,
+        min_value=1,
+        max_value=100,
+        step=1,
         unit="%",
-        entity_type=EntityType.DIAGNOSTIC,
+        entity_type=EntityType.CONFIG,
         translation_key="min_brightness",
         fallback_name="Min Brightness",
     )
-    # ── Max brightness (0xFC04) — READ-ONLY diagnostic sensor, percent ──
-    .sensor(
+    # ── Max brightness (0xFC04) — writable, percent ──
+    .number(
         TS110DLevelControl.AttributeDefs.manufacturer_max_level.name,
         LEVEL,
         endpoint_id=1,
+        min_value=1,
+        max_value=100,
+        step=1,
         unit="%",
-        entity_type=EntityType.DIAGNOSTIC,
+        entity_type=EntityType.CONFIG,
         translation_key="max_brightness",
         fallback_name="Max Brightness",
     )

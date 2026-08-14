@@ -47,15 +47,45 @@ LevelControl subclass (NOT F000LevelControlCluster) for the reasons in (1) above
 Quirk adds / fixes:
   1. Reliable on/off + brightness via standard ZCL, with 0xF000->current_level
      read mirroring.
-  2. Min / Max brightness config numbers (0xFC03 / 0xFC04), shown as 1..100 %
-     sliders. The raw 1..255 value is converted to percent in the cluster's
-     get()/write_attributes() and rounded to the nearest integer % (ZHA's number
-     `multiplier` would leave an unrounded float like 52.94117647 % in the state).
+  2. Min / Max brightness (0xFC03 / 0xFC04) as READ-ONLY diagnostic sensors in
+     percent. They are NOT writable config numbers — see "Min/max are inert"
+     below. The raw 1..255 value is converted to percent in the cluster's get()
+     and rounded to the nearest integer % (a ZHA `multiplier` would leave an
+     unrounded float like 52.94117647 % in the state).
   3. Indicator (backlight) LED mode select (OnOff 0x8001) — labels mapped to the
      app's DP102 (none / enable_white / enable_yellow).
   4. Suppress the useless default LevelControl config entities and the raw
      manufacturer-attribute auto-entities.
   5. Remove both power-on selects (standard StartUpOnOff + Tuya power_on_state).
+
+Min/max are inert — why they are sensors, not numbers (issue #3)
+---------------------------------------------------------------
+0xFC03 / 0xFC04 are writable in the ZCL sense — the device answers every write
+with SUCCESS, echoes the new value back in an unsolicited report, and persists
+it across a mains power cycle — but the firmware never *acts* on the stored
+value. Measured on hardware with 0xFC03 = 128 (50 %) and 0xFC04 = 178 (70 %):
+
+    commanded level  40 ->  77     200 -> 200
+                     60 ->  77     254 -> 254
+
+The floor sits at 77 and there is no ceiling at all — i.e. the factory 77/255,
+regardless of what is stored. Physical wall dimming sweeps the same 77..255.
+These were eliminated as explanations:
+
+  - Tuya "attribute read" spell (BaseEnchantedDevice) — cast and verified on
+    the wire, no change.
+  - OnOff off->on cycle, ZHA restart, mains power cycle — no change.
+  - The Tuya 0xEF00 DP path — the device does expose 0xEF00 on EP1, but the
+    Tuya gateway never used it for min/max in any capture; it wrote the same
+    0xFC03/0xFC04 and drove level with the private 0x00F0 command.
+
+Notably the limits *did* work while the unit was paired to the Tuya gateway
+(wall dimming floored/ceilinged exactly as configured). The only difference is
+the factory reset performed when putting the panel into pairing mode, so the
+feature appears to be dormant until whatever provisioning the Tuya gateway does
+at join. Until that is identified, exposing writable controls that silently do
+nothing is worse than exposing none, so both are read-only sensors — the same
+conclusion the TS0052 quirk reached for its standard MinLevel/MaxLevel.
 
 NOTE: the real bulb-type attribute (0xFC01 vs 0xFC02) is unresolved — 0xFC02
 reads as unsupported on this variant, so bulb/dimming-mode attrs are declared
@@ -87,19 +117,21 @@ TUYA_MIN_LEVEL = 0xFC03  # min brightness (cached 77)
 TUYA_MAX_LEVEL = 0xFC04  # max brightness (cached 255)
 
 # Min/Max brightness are stored raw 1..255 on the device but shown as 1..100 %.
-# The percent is computed in the cluster (get/write_attributes) rather than via
-# the ZHA number `multiplier`, so the entity state is rounded to 2 dp (ZHA does
-# not round the multiplier result, which would show e.g. 28.6274509803922 %).
+# The percent is computed in the cluster's get() rather than via a ZHA
+# `multiplier`, so the entity state is a whole number (ZHA does not round the
+# multiplier result, which would show e.g. 28.6274509803922 %).
 
 
 class TS110DLevelControl(CustomCluster, LevelControl):
     """Plain LevelControl + Tuya manufacturer attributes.
 
-    Standard move_to_level* is left intact (this variant honours it), so zha's
+    Standard move_to_level* is left intact (this variant honours it while the
+    light is ON — see issue #4 for the OFF-state defect), so zha's
     light.async_turn_on receives a proper command result. We only:
-      - declare the Tuya manufacturer attributes so they can back config entities
-      - mirror 0xF000 brightness reports (10..1000) onto current_level (0..254)
-        so brightness changed at the wall is reflected in Home Assistant.
+      - declare the Tuya manufacturer attributes so they can back entities
+      - mirror 0xF000 brightness reports onto current_level (same 0..254
+        domain, no rescale) so brightness changed at the wall is reflected in
+        Home Assistant.
     """
 
     class AttributeDefs(LevelControl.AttributeDefs):
@@ -145,27 +177,23 @@ class TS110DLevelControl(CustomCluster, LevelControl):
     def get(self, key, default=None):
         """Show raw 1..255 min/max brightness as a nearest-integer percent.
 
-        ZHA's number entity uses cluster.get(); returning a pre-rounded int
-        percent (with the number's multiplier left at 1) makes the entity
-        *state* a whole number, instead of the long float produced by
-        raw * (100/255). round() with no ndigits returns an int.
+        ZHA's sensor entity uses cluster.get(); returning a pre-rounded int
+        percent makes the entity *state* a whole number instead of the long
+        float produced by raw * (100/255). round() with no ndigits returns an
+        int.
+
+        There is deliberately no matching write_attributes() percent
+        conversion. The min/max attributes back read-only sensors now (see the
+        module docstring), so nothing in HA writes them. Keeping a percent-
+        interpreting write path with no writer would only trap anyone reaching
+        for zha.set_zigbee_cluster_attribute, where the natural thing to pass
+        is the raw 1..255 value the device actually stores; writes through that
+        service now mean exactly what they say.
         """
         if key in self._PCT_ATTRS:
             raw = super().get(key, None)
             return default if raw is None else round(raw * 100 / 255)
         return super().get(key, default)
-
-    async def write_attributes(self, attributes, manufacturer=None, **kwargs):
-        """Convert percent writes back to the device's raw 1..255 domain."""
-        out = {}
-        for attr, val in attributes.items():
-            if attr in self._PCT_ATTRS:
-                out[attr] = max(1, min(255, round(float(val) * 255 / 100)))
-            else:
-                out[attr] = val
-        return await super().write_attributes(
-            out, manufacturer=manufacturer, **kwargs
-        )
 
 
 class TS110DBacklightMode(t.enum8):
@@ -235,31 +263,23 @@ class TS110DBacklightMode(t.enum8):
         translation_key="backlight_mode",
         fallback_name="Indicator Mode",
     )
-    # ── Min brightness (0xFC03), shown as 1..100 % slider (2 dp via cluster) ──
-    .number(
+    # ── Min brightness (0xFC03) — READ-ONLY diagnostic sensor, percent ──
+    .sensor(
         TS110DLevelControl.AttributeDefs.manufacturer_min_level.name,
         LEVEL,
         endpoint_id=1,
-        min_value=1,
-        max_value=100,
-        step=1,
         unit="%",
-        mode="slider",
-        entity_type=EntityType.CONFIG,
+        entity_type=EntityType.DIAGNOSTIC,
         translation_key="min_brightness",
         fallback_name="Min Brightness",
     )
-    # ── Max brightness (0xFC04), shown as 1..100 % slider (2 dp via cluster) ──
-    .number(
+    # ── Max brightness (0xFC04) — READ-ONLY diagnostic sensor, percent ──
+    .sensor(
         TS110DLevelControl.AttributeDefs.manufacturer_max_level.name,
         LEVEL,
         endpoint_id=1,
-        min_value=1,
-        max_value=100,
-        step=1,
         unit="%",
-        mode="slider",
-        entity_type=EntityType.CONFIG,
+        entity_type=EntityType.DIAGNOSTIC,
         translation_key="max_brightness",
         fallback_name="Max Brightness",
     )

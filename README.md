@@ -71,7 +71,7 @@
 | 25 | Simon 11-241E8003TY | TS0003 3-Gang Switch | `_TZ3002_wt4t1anwyef42zv4` | `ts0003_switch_TZ3002_wt4t1anwyef42zv4.py` | `switch` + `select` | device_type override 0x0100→0x0004 (Light→Switch) + drops the redundant "Opening" binary_sensor; indicator LED select; StartUpOnOff + firmware/OTA suppressed |
 | 26 | Tuya 12-70E8306 | TS0022 2-Gang Scene Switch | `_TZ3000_klkkwshz` | `ts0022_scene_switch_TZ3000_klkkwshz.py` | `switch` + `select` | 2 native OnOff gangs; `ScenePressOnOffCluster` catches the physical-press `0xFB` and toggles state; `TuyaZBOnOffAttributeCluster` surfaces the indicator LED select; dead StartUpOnOff suppressed |
 | 27 | Simon 14-66E7109TY | SM0308F HVAC/AC Panel | `_TZC200_qbuzgrdocufrqgdu` | `sm0308f_climate_TZC200_qbuzgrdocufrqgdu.py` | `switch` + `number` + `select` ×3 + `binary_sensor` + `sensor` ×5 | Hybrid ZCL + Tuya-DP AC panel — standard OnOff/Fan writes are ACK-then-ignored, so power/fan/mode/scenario go via DP130/115/116/152; `SM0308FMCUCluster` flips the mis-directed DP report direction bit; also ships a wrapping `climate` entity via `climate.py` |
-| 28 | Simon 15-66E8015 | TS110D 1-Gang Dimmer | `_TZ3210_1znecg8a` | `ts110d_dimmer_TZ3210_1znecg8a.py` | `light` + `number` ×2 + `select` | Simon M7 single-gang dimmer; `TS110DLevelControl` mirrors the Tuya 0xF000 report to standard `current_level` (same 0-254 domain, no rescale) so wall-dim reflects in HA; min/max brightness shown as %; indicator LED select |
+| 28 | Simon 15-66E8015 | TS110D 1-Gang Dimmer | `_TZ3210_1znecg8a` | `ts110d_dimmer_TZ3210_1znecg8a.py` | `light` + `sensor` ×2 + `select` | Simon M7 single-gang dimmer; `TS110DLevelControl` mirrors the Tuya 0xF000 report to standard `current_level` (same 0-254 domain, no rescale) so wall-dim reflects in HA; min/max brightness are read-only diagnostics (firmware ignores writes — see quirk docstring); indicator LED select |
 | 29 | Zemismart 18-ZM25TQ | TS0601 Roller Shade Motor | `_TZE200_fzo2pocs` | `ts0601_cover_TZE200_fzo2pocs.py` | `cover` + `switch` | Tubular roller-shade motor; `invert=True`; upper/lower limits can only be taught with the physical remote (not settable over Tuya app/network); DP106 motor_mode hidden and pinned to Linkage |
 | 30 | Tuya 19-BCM500DS | TS0601 Curtain Track | `_TZE200_rmymn92d` | `ts0601_cover_TZE200_rmymn92d.py` | `cover` + `switch` + `binary_sensor` + `sensor` | Curtain track; `ReversedControlCover` swaps open↔close (DP1 direction is inverted vs the declared enum) while keeping the DP2/DP3 position pipe correct; `invert=True`; DP11 full-travel time + DP10 motor-fault diagnostics |
 | 31 | Tuya 20-BCM100DB | TS0601 Curtain Track | `_TZE200_eegnwoyw` | `ts0601_cover_TZE200_eegnwoyw.py` | `cover` + `switch` + `binary_sensor` + `sensor` | Sibling of 19-BCM500DS — identical DP layout and `ReversedControlCover` / `invert=True` workaround |
@@ -607,17 +607,21 @@ Hybrid **ZCL + Tuya-DP** AC/HVAC panel (EP1 has standard OnOff/Thermostat/Fan **
 
 ### Simon 15-66E8015 (`_TZ3210_1znecg8a`, model `TS110D`)
 
-Standard ZCL dimmer of the TS110E family (single EP1: OnOff + LevelControl). This variant supports standard `move_to_level*` commands, so `TS110DLevelControl` keeps standard command handling and only mirrors the Tuya report.
+Standard ZCL dimmer of the TS110E family (single EP1: OnOff + LevelControl). This variant supports standard `move_to_level*` commands, so `TS110DLevelControl` keeps standard command handling and only mirrors the Tuya report. (Caveat: `move_to_level_with_on_off` is answered with SUCCESS but ignored entirely while the light is **off** — see issue #4.)
 
 | Feature | Cluster | Attribute | Entity Type | Description |
 |---------|---------|-----------|-------------|-------------|
 | Light | 0x0006 + 0x0008 | `on_off` + `current_level` (0x0000) | Standard (`light`) | Dimmable, brightness 0-254 (DP2) |
 | Indicator Mode | 0x0006 | `backlight_mode` (0x8001) | Config (`select`) | Light Close (0) / Off white, On orange (1) / Off orange, On white (2) |
-| Min Brightness | 0x0008 | `manufacturer_min_level` (0xFC03) | Config (`number`) | 1-100 % (device stores raw 1-255; quirk converts) |
-| Max Brightness | 0x0008 | `manufacturer_max_level` (0xFC04) | Config (`number`) | 1-100 % (device stores raw 1-255; quirk converts) |
+| Min Brightness | 0x0008 | `manufacturer_min_level` (0xFC03) | Diagnostic (`sensor`) | Read-only, 1-100 % (device stores raw 1-255; quirk converts) |
+| Max Brightness | 0x0008 | `manufacturer_max_level` (0xFC04) | Diagnostic (`sensor`) | Read-only, 1-100 % (device stores raw 1-255; quirk converts) |
 | (mirror) | 0x0008 | `manufacturer_current_level` (0xF000) | — | Tuya level report; copied verbatim to `current_level` (same 0-254 domain, **no rescale**) so wall-dimming reflects in HA |
 
-Min/max % conversion is done in the cluster (`round(raw*100/255)` / `round(val*255/100)`), not via a ZHA `multiplier`. Suppresses redundant LevelControl config entities (transition time, on_level, move rate, start-up level), both power-on selects (StartUpOnOff + duplicate Tuya power_on_state), and firmware/OTA entities. Live IEEE `f0:82:c0:ff:fe:c9:24:97`.
+Min/max % conversion is done in the cluster's `get()` (`round(raw*100/255)`), not via a ZHA `multiplier`. Suppresses redundant LevelControl config entities (transition time, on_level, move rate, start-up level), both power-on selects (StartUpOnOff + duplicate Tuya power_on_state), and firmware/OTA entities. Live IEEE `f0:82:c0:ff:fe:c9:24:97`.
+
+> **Upgrading from an earlier version:** these two were `number` entities before. The unique_id is unchanged but the platform is not, so after upgrading the old `number.<dimmer>_min_brightness` / `_max_brightness` rows linger in the entity registry as permanently unavailable while the new `sensor.*` ones appear alongside. Delete the two stale `number.*` entities (Settings → Devices & Services → Entities), and repoint any dashboard card or automation at the `sensor.*` ids.
+
+**Min/max are read-only on purpose.** The firmware accepts writes to `0xFC03`/`0xFC04` (SUCCESS + echo report + persists across a mains power cycle) but never acts on them — the dimming range stays at the factory 77…255 on every path, including physical wall dimming. The Tuya spell, OnOff cycling, ZHA restart, mains power cycle and the `0xEF00` DP path were all eliminated as triggers. Exposing writable controls that silently do nothing is worse than exposing none, so both are diagnostics — the same conclusion the TS0052 quirk reached. Full analysis in the quirk docstring and issue #3.
 
 ---
 

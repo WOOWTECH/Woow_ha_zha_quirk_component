@@ -20,12 +20,12 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Home%20Assistant-2025.1+-blue?logo=homeassistant" alt="Home Assistant 2025.1+" />
+  <img src="https://img.shields.io/badge/Home%20Assistant-2026.3+-blue?logo=homeassistant" alt="Home Assistant 2026.3+" />
   <img src="https://img.shields.io/badge/Python-3.12+-yellow?logo=python" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/HACS-Compatible-green?logo=homeassistantcommunitystore" alt="HACS Compatible" />
   <img src="https://img.shields.io/badge/License-MIT-red" alt="MIT License" />
-  <img src="https://img.shields.io/badge/Quirks-31%20files-blue" alt="31 Quirk Files" />
-  <img src="https://img.shields.io/badge/Devices-42%20signatures-brightgreen" alt="42 Device Signatures" />
+  <img src="https://img.shields.io/badge/Quirks-33%20files-blue" alt="33 Quirk Files" />
+  <img src="https://img.shields.io/badge/Devices-44%20signatures-brightgreen" alt="44 Device Signatures" />
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 
 > The **Quirk File** column shows the file under `quirks/`, named `{model}_{type}_{manuf-suffix}.py`
 > (Simon-brand devices use a `simon_{model/series}_{type}.py` variant). One file may register several
-> `(manufacturer, model)` signatures. 32 files register 43 signatures in total.
+> `(manufacturer, model)` signatures. 33 files register 44 signatures in total.
 
 | # | Device | Model | Manufacturer ID | Quirk File | HA Platform | Key Features |
 |---|--------|-------|-----------------|------------|-------------|--------------|
@@ -59,19 +59,19 @@
 | 13 | Tuya TS0502B | CCT Dimmable Light | `_TZ3000_yeygk4hw` | `ts0502b_cct_TZ3000_yeygk4hw.py` | `light` | Kelvin↔mireds auto-conversion, CCT-only mode fix (2500-6500K) |
 | 14 | Simon SM0301 | 1-CH Curtain Controller | `_TYZB01_koulgwmy` | `simon_sm0301_curtain.py` | `cover` + `number` | Phantom EP2-4 removal, binary_sensor suppression, OnOff→Level open/close redirect, **time-based positioning** (accurate intermediate positions; native level positioning is nonlinear), no "device did not respond", Travel Time in seconds (1-180 s) |
 | 15 | Tuya 3-Gang Screen Switch | 3-Gang Touch Switch | `_TZE204_k7v0eqke` | `ts0601_switch_TZE204_k7v0eqke.py` | `switch` | Screen label auto-sync, countdown timer, child lock, LED colors |
-| 16 | Simon 10-66E8025 | TS0726 8-Gang Scene+Switch Panel | `_TZ3210_5nd2aydx` | `ts0726_scene_switch_TZ3210_5nd2aydx.py` | `switch` + `select` | 8 switches mapped EP1-8 = physical switches 1-8 (phantom EP9 removed), all gangs force-set to regular-relay (Switch) mode on startup — scene mode disabled, mode selects removed (0xE001 0xD020), indicator LED mode, dead StartUpOnOff selects suppressed, firmware entities collapsed to 1 |
+| 16 | Simon 10-66E8025 | TS0726 8-Gang Scene+Switch Panel | `_TZ3210_5nd2aydx` | `ts0726_scene_switch_TZ3210_5nd2aydx.py` | `switch` + `select` | 8 switches mapped EP1-8 = physical switches 1-8 (phantom EP9 removed), all gangs force-set to regular-relay (Switch) mode on startup — scene mode disabled, mode selects removed (0xE001 0xD020), indicator LED mode (Close / Off white On orange / Off orange On white — each option is an *off-colour/on-colour pair*, same wording as the 66E8015 dimmer), dead StartUpOnOff selects suppressed, firmware entities collapsed to 1 |
 | 17 | Simon i7 17-70E857TY | TS1002 0-10V Smart Dimming Remote Switch (2-gang) | `_TZ3000_qe3d5gga` | `simon_i7_70e857ty_dimmer.py` | `binary_sensor` + `select` | 2 gang On/Off **binary_sensors** (Gang 1 / Gang 2) that **mirror** the physical wall-switch state — device is a remote whose server OnOff rejects on/off (`UNSUP_CLUSTER_COMMAND`), so the control-less default switches are suppressed and replaced with read-only binary_sensors; single device-global Status Light indicator mode (Close / Switch Status / Switch Position), Identify button + duplicate firmware/OTA entities removed, dead StartUpOnOff selects suppressed |
 | 18 | Simon 4-58E8017 | TS0034 Rotary CCT Knob (controller) | `_TZ3000_ocqo8iwd` | `simon_58e8017_knob.py` | `zha_event` + `binary_sensor` + `sensor` ×2 | Rotary knob remote — press → OnOff `on`/`off`, rotate → LevelControl `step` (up/down), colour-mode rotate → **Tuya `0xE0`** decoded to a clean `tuya_set_color_temp` event (cluster 768, `temp_value` 0-1000). Also exposes 3 read-only **entities** reflecting its actions: On/Off `binary_sensor`, Colour Temperature `sensor` (0–100%), Brightness `sensor` (0–100%, approx). Stock Identify button + firmware/OTA `update` entity suppressed. **Needs a group bind** (knob multicasts to group `0x2760`; ZHA's unicast bind-to-coordinator is ignored by the Tuya firmware) — **the component now creates this automatically** on (re-)pair, plus a `woow_zha_quirks.rebind_knob` service to force it (see `knob_rebind.py`) |
 | 19 | Simon 2-58E8002 | 2-Gang Smart Switch | `_TZ2000_euqqstyrbiynph3m` | `simon_58e8002_switch.py` | `switch` + `select` | 2 native OnOff gangs; `TuyaZBOnOffAttributeCluster` surfaces the indicator LED mode (Close / Switch Status / Switch Position); dead StartUpOnOff + firmware/OTA entities suppressed |
 | 20 | Simon 3-70E8304 (S2100-1004 variant) | 4-Gang Smart Switch | `_TZ2000_kgwm3i4o4klbuaks` | `simon_i7_s2100.py` | `switch` | Second 4-gang variant registered by the Simon i7 builder; Indicator LED + All On/Off virtual endpoint |
 | 21 | Simon 6-66E8003 | 3-Gang Smart Switch | `_TZ3210_z9wuslixqsbfizut` | `ts0003_switch_TZ3210_z9wuslixqsbfizut.py` | `switch` + `select` | 3 native OnOff gangs; phantom EP4-9 removed; indicator LED mode select; StartUpOnOff + firmware/OTA suppressed |
 | 22 | Simon 7-58E8021 | TS0034 6-Gang Scene Panel (as plain switches) | `_TZ3000_hebcnahz` | `simon_58e8021_switch.py` | `switch` + `select` | 6 gangs as plain switches; `ScenePressOnOffCluster` catches the physical-press `0xFB` command and toggles the server OnOff so state follows; indicator LED select; StartUpOnOff + firmware/OTA suppressed; per-button scene `zha_event` intentionally out of scope |
-| 23 | Simon 8-58E7101 | SM0308C Fan-Coil Thermostat | `_TZ2000_cykrrj2x` | `sm0308c_climate_TZ2000_cykrrj2x.py` | `switch` + `number` + `select` ×3 + `sensor` | Standard-ZCL fan-coil thermostat; `SM0308CThermostat` adds a custom `sleep_mode` (0x9002); `system_mode` uses device-custom enum 0/1/2 (cool/heat/fan); default `climate` entity hidden |
+| 23 | Simon 8-58E7101 | SM0308C Fan-Coil Thermostat | `_TZ2000_cykrrj2x` | `sm0308c_climate_TZ2000_cykrrj2x.py` | `switch` + `number` + `select` ×3 + `sensor` | Standard-ZCL fan-coil thermostat; `SM0308CThermostat` adds a custom `sleep_mode` (0x9002); `system_mode` uses device-custom enum 0/1/2 (cool/heat/fan); ZHA's own `climate` entity hidden and replaced by the wrapping HA-core `climate` from `climate.py` |
 | 24 | Simon 9-241E8008TY | TS0726 4-Gang Scene Panel (as plain switches) | `_TZ3002_v0xabl0o` | `ts0726_scene_switch_TZ3002_v0xabl0o.py` | `switch` + `select` | 4 gangs forced to Switch mode on startup (`gang_mode`=0 on 0xE001/0xD020) so the indicator LED works; press → OnOff report (no scene pulse); StartUpOnOff ×4 + firmware ×4 suppressed |
 | 25 | Simon 11-241E8003TY | TS0003 3-Gang Switch | `_TZ3002_wt4t1anwyef42zv4` | `ts0003_switch_TZ3002_wt4t1anwyef42zv4.py` | `switch` + `select` | device_type override 0x0100→0x0004 (Light→Switch) + drops the redundant "Opening" binary_sensor; indicator LED select; StartUpOnOff + firmware/OTA suppressed |
 | 26 | Tuya 12-70E8306 | TS0022 2-Gang Scene Switch | `_TZ3000_klkkwshz` | `ts0022_scene_switch_TZ3000_klkkwshz.py` | `switch` + `select` | 2 native OnOff gangs; `ScenePressOnOffCluster` catches the physical-press `0xFB` and toggles state; `TuyaZBOnOffAttributeCluster` surfaces the indicator LED select; dead StartUpOnOff suppressed |
 | 27 | Simon 14-66E7109TY | SM0308F HVAC/AC Panel | `_TZC200_qbuzgrdocufrqgdu` | `sm0308f_climate_TZC200_qbuzgrdocufrqgdu.py` | `switch` + `number` + `select` ×3 + `binary_sensor` + `sensor` ×5 | Hybrid ZCL + Tuya-DP AC panel — standard OnOff/Fan writes are ACK-then-ignored, so power/fan/mode/scenario go via DP130/115/116/152; `SM0308FMCUCluster` flips the mis-directed DP report direction bit; also ships a wrapping `climate` entity via `climate.py` |
-| 28 | Simon 15-66E8015 | TS110D 1-Gang Dimmer | `_TZ3210_1znecg8a` | `ts110d_dimmer_TZ3210_1znecg8a.py` | `light` + `sensor` ×2 + `select` | Simon M7 single-gang dimmer; `TS110DLevelControl` mirrors the Tuya 0xF000 report to standard `current_level` (same 0-254 domain, no rescale) so wall-dim reflects in HA; min/max brightness are read-only diagnostics (firmware ignores writes — see quirk docstring); indicator LED select |
+| 28 | Simon 15-66E8015 | TS110D 1-Gang Dimmer | `_TZ3210_1znecg8a` | `ts110d_dimmer_TZ3210_1znecg8a.py` | `light` + `number` ×2 + `select` | Simon M7 single-gang dimmer; `TS110DLevelControl` mirrors the Tuya 0xF000 report to standard `current_level` (same 0-254 domain, no rescale) so wall-dim reflects in HA; **writable Min/Max Brightness `number`s in %** — the firmware only commits a window it receives as a *pair*, so the quirk always sends 0xFC03+0xFC04 in one frame (#3), and refuses a window with max at or below min (#5); a level command sent while the lamp is off is preceded by an On, because this firmware ACKs but ignores `move_to_level_with_on_off` when dark (#4); indicator LED select |
 | 29 | Zemismart 18-ZM25TQ | TS0601 Roller Shade Motor | `_TZE200_fzo2pocs` | `ts0601_cover_TZE200_fzo2pocs.py` | `cover` + `switch` | Tubular roller-shade motor; `invert=True`; upper/lower limits can only be taught with the physical remote (not settable over Tuya app/network); DP106 motor_mode hidden and pinned to Linkage |
 | 30 | Tuya 19-BCM500DS | TS0601 Curtain Track | `_TZE200_rmymn92d` | `ts0601_cover_TZE200_rmymn92d.py` | `cover` + `switch` + `binary_sensor` + `sensor` | Curtain track; `ReversedControlCover` swaps open↔close (DP1 direction is inverted vs the declared enum) while keeping the DP2/DP3 position pipe correct; `invert=True`; DP11 full-travel time + DP10 motor-fault diagnostics |
 | 31 | Tuya 20-BCM100DB | TS0601 Curtain Track | `_TZE200_eegnwoyw` | `ts0601_cover_TZE200_eegnwoyw.py` | `cover` + `switch` + `binary_sensor` + `sensor` | Sibling of 19-BCM500DS — identical DP layout and `ReversedControlCover` / `invert=True` workaround |
@@ -529,7 +529,7 @@ Standard ZCL fan-coil thermostat (NOT Tuya MCU). EP1 exposes OnOff + Thermostat 
 | Sleep Mode | 0x0201 | `sleep_mode` (0x9002, custom) | Config (`select`) | Null (0) / Sleep (1). Added by `SM0308CThermostat`; written with no manufacturer code; only accepted while the AC is powered |
 | Fan Speed | 0x0202 | `fan_mode` | Config (`select`) | Low (0x01) / Medium (0x03) / High (0x05) / Auto (0x06) |
 
-Prevents default `climate` (hidden by `climate.py`), Thermostat setpoint-limit numbers, Identify/OTA/lqi/rssi. Verified on ZHA 2026-06-26.
+Prevents default `climate` (hidden by `climate.py`), Thermostat setpoint-limit numbers, Identify/OTA/lqi/rssi. `climate.py` puts a single HA-core `climate` entity back in its place, wrapping the entities above (off/cool/heat/fan_only + fan speed + sleep preset) and hiding them from the device card. Verified on ZHA 2026-06-26.
 
 ---
 
@@ -607,21 +607,27 @@ Hybrid **ZCL + Tuya-DP** AC/HVAC panel (EP1 has standard OnOff/Thermostat/Fan **
 
 ### Simon 15-66E8015 (`_TZ3210_1znecg8a`, model `TS110D`)
 
-Standard ZCL dimmer of the TS110E family (single EP1: OnOff + LevelControl). This variant supports standard `move_to_level*` commands, so `TS110DLevelControl` keeps standard command handling and only mirrors the Tuya report. (Caveat: `move_to_level_with_on_off` is answered with SUCCESS but ignored entirely while the light is **off** — see issue #4.)
+Standard ZCL dimmer of the TS110E family (single EP1: OnOff + LevelControl). This variant supports standard `move_to_level*` commands, so `TS110DLevelControl` keeps standard command handling and only mirrors the Tuya report.
 
 | Feature | Cluster | Attribute | Entity Type | Description |
 |---------|---------|-----------|-------------|-------------|
 | Light | 0x0006 + 0x0008 | `on_off` + `current_level` (0x0000) | Standard (`light`) | Dimmable, brightness 0-254 (DP2) |
-| Indicator Mode | 0x0006 | `backlight_mode` (0x8001) | Config (`select`) | Light Close (0) / Off white, On orange (1) / Off orange, On white (2) |
-| Min Brightness | 0x0008 | `manufacturer_min_level` (0xFC03) | Diagnostic (`sensor`) | Read-only, 1-100 % (device stores raw 1-255; quirk converts) |
-| Max Brightness | 0x0008 | `manufacturer_max_level` (0xFC04) | Diagnostic (`sensor`) | Read-only, 1-100 % (device stores raw 1-255; quirk converts) |
+| Indicator Mode | 0x0006 | `backlight_mode` (0x8001) | Config (`select`) | Light Close (0) / Off white On orange (1) / Off orange On white (2) — each option names the LED colour when the gang is **off** and when it is **on** |
+| Min Brightness | 0x0008 | `manufacturer_min_level` (0xFC03) | Config (`number`) | Writable, 1-100 % (device stores raw 1-255; quirk converts) |
+| Max Brightness | 0x0008 | `manufacturer_max_level` (0xFC04) | Config (`number`) | Writable, 1-100 % (device stores raw 1-255; quirk converts) |
 | (mirror) | 0x0008 | `manufacturer_current_level` (0xF000) | — | Tuya level report; copied verbatim to `current_level` (same 0-254 domain, **no rescale**) so wall-dimming reflects in HA |
 
 Min/max % conversion is done in the cluster's `get()` (`round(raw*100/255)`), not via a ZHA `multiplier`. Suppresses redundant LevelControl config entities (transition time, on_level, move rate, start-up level), both power-on selects (StartUpOnOff + duplicate Tuya power_on_state), and firmware/OTA entities. Live IEEE `f0:82:c0:ff:fe:c9:24:97`.
 
-> **Upgrading from an earlier version:** these two were `number` entities before. The unique_id is unchanged but the platform is not, so after upgrading the old `number.<dimmer>_min_brightness` / `_max_brightness` rows linger in the entity registry as permanently unavailable while the new `sensor.*` ones appear alongside. Delete the two stale `number.*` entities (Settings → Devices & Services → Entities), and repoint any dashboard card or automation at the `sensor.*` ids.
+**Min/max only commit when written as a pair (issue #3).** `0xFC03`/`0xFC04` are ordinary writable uint16 attributes — every write is ACKed, echoed, read back and persisted — but the firmware keeps a *separate committed window* and only replaces it when it receives min and max close together. A lone write, or a pair more than ~1 s apart, updates storage and leaves the committed window untouched, so the device goes on clamping to the previous one. Measured on hardware (2026-08-14): a pair 2.5 s apart stored 102/204 but still clamped to the old window; the same pair 0.1 s apart committed. `TS110DLevelControl` therefore always sends **both attributes in one frame** (reading the partner from the cache when only one is being set), which is strictly tighter than the ~100 ms pair the Tuya gateway sends. Note a read-back proves nothing here: it returns the *stored* value, not the committed one.
 
-**Min/max are read-only on purpose.** The firmware accepts writes to `0xFC03`/`0xFC04` (SUCCESS + echo report + persists across a mains power cycle) but never acts on them — the dimming range stays at the factory 77…255 on every path, including physical wall dimming. The Tuya spell, OnOff cycling, ZHA restart, mains power cycle and the `0xEF00` DP path were all eliminated as triggers. Exposing writable controls that silently do nothing is worse than exposing none, so both are diagnostics — the same conclusion the TS0052 quirk reached. Full analysis in the quirk docstring and issue #3.
+This is why earlier versions of this quirk shipped the two as read-only `sensor`s — every ZHA test that "proved" the attributes inert wrote them ~1.5 s apart. They are now writable `number`s again. (The TS0052 sibling is genuinely read-only: it rejects every write with ZCL `READ_ONLY` 0x88.)
+
+**Inverted windows are refused (issue #5).** The device silently accepts max ≤ min, so the quirk raises instead, with a message naming the value to change first. The Tuya app's extra "max − min ≥ 30 %" rule is deliberately *not* copied — it exists because the app's slider is relative to the window, while HA's brightness is absolute.
+
+**Level commands need the lamp already on (issue #4).** While the lamp is off, `move_to_level_with_on_off` is answered SUCCESS and then acted on for neither the implicit on nor the level — HA's "turn on at brightness X" left the lamp dark while HA believed it was lit. `TS110DLevelControl.command()` sends OnOff `on` first whenever the cached `on_off` says the lamp is off. (Routing through the Tuya private `0x00F0` command was rejected: the upstream `F000LevelControlCluster.command()` override returns `None` on that path and crashes `light.async_turn_on`.)
+
+> **Upgrading from 1.2.x:** the two brightness limits were `sensor`s in 1.2.x and are `number`s again in 1.3.0. The unique_id is unchanged but the platform is not, so the old `sensor.<dimmer>_min_brightness` / `_max_brightness` rows linger in the entity registry as permanently unavailable while the new `number.*` ones appear alongside. Delete the stale `sensor.*` rows (Settings → Devices & Services → Entities) and repoint any dashboard card or automation at the `number.*` ids.
 
 ---
 
@@ -776,7 +782,7 @@ graph TB
 
     subgraph "WOOW ZHA Quirks"
         INIT["__init__.py<br/>Auto-loader"]
-        QUIRKS["Quirk Modules<br/>(31 files)"]
+        QUIRKS["Quirk Modules<br/>(33 files)"]
     end
 
     subgraph "ZHA + zigpy"
@@ -803,6 +809,10 @@ graph TB
 3. **Entity Creation**: ZHA reads the quirk metadata (clusters, attributes, entity types) and creates appropriate HA entities (switches, covers, fans, lights, selects, numbers).
 
 4. **Tuya MCU Bridge**: For TS0601 devices, custom ZCL clusters bridge between standard ZCL protocol and Tuya MCU DP commands on cluster `0xEF00`.
+
+5. **Self-heal + orphan sweep**: HA's boot order is not guaranteed, so on some restarts ZHA restores its devices before this component's import-time registration lands and they come up with `quirk_applied=False` (a 3-gang switch appears as 3 *lights*). `quirk_heal.py` detects that once per start and reloads the ZHA config entry to re-create the devices against the now-populated registry — the old manual "reload ZHA integration", automated. A healthy boot is a complete no-op. `orphan_sweep.py` separately removes entity-registry rows left behind by a quirk change or a re-pair, but only when all four safety signals hold (ZHA platform, state `unavailable`, `restored=True`, and the owning device currently available), so a genuinely offline device is never touched.
+
+6. **HA-core climate wrapper**: the AC/thermostat panels get a real `ClimateEntity` from `climate.py` instead of ZHA's own, which has no `fan_only`, no low/med/high fan and no presets. It wraps the quirk's own switch/select/number/sensor entities and hides them. Because everything it shows is second-hand, it treats the power switch as the only authority on off-vs-running, distinguishes a *missing* backing entity (ZHA rebuilding — ignore) from an *unavailable* one (device unreachable — go unavailable too), and backs the state-change subscription with a 60 s reconcile plus a 5 min watchdog that rebuilds a climate lost to a delete/re-pair. See `docs/adr/0001-backing-state-semantics.md`.
 
 ---
 
@@ -850,12 +860,14 @@ config/
         ├── light_effects.py
         ├── presence_defaults.py
         ├── quirk_priority.py
+        ├── quirk_heal.py
+        ├── orphan_sweep.py
         ├── brand/                     # HACS icon/logo images
         └── quirks/
             ├── __init__.py
             ├── simon_i7_s2100.py
             ├── ts0001_switch_TZ3000_tqlv4ug4.py
-            └── ... (29 more quirk files)
+            └── ... (31 more quirk files)
 ```
 
 3. Add `woow_zha_quirks:` to `configuration.yaml`
@@ -902,8 +914,10 @@ Woow_ha_zha_quirk_component/
 │       ├── light_effects.py                                # Runtime patch adding 44 scene effects (GL-SPI-206P)
 │       ├── presence_defaults.py                            # First-pair curated defaults + apply_presence_defaults service (WO_40117/WO_40116)
 │       ├── quirk_priority.py                               # Guard: keeps woow v2 quirks ahead of competing upstream v2 quirks
+│       ├── quirk_heal.py                                   # Boot-race safety net: one ZHA reload when a device came up unquirked
+│       ├── orphan_sweep.py                                 # Removes entity-registry rows orphaned by a quirk change / re-pair
 │       ├── brand/                                          # HACS brand images (icon.png, icon@2x.png, logo.png, logo@2x.png)
-│       └── quirks/                                         # 31 quirk files (42 (manufacturer, model) signatures)
+│       └── quirks/                                         # 33 quirk files (44 (manufacturer, model) signatures)
 │           ├── __init__.py
 │           ├── simon_58e8002_switch.py                     # Simon 2-58E8002 — 2-gang switch (_TZ2000_euqqstyrbiynph3m)
 │           ├── simon_58e8017_knob.py                       # Simon 4-58E8017 — TS0034 rotary CCT knob controller
@@ -936,8 +950,15 @@ Woow_ha_zha_quirk_component/
 │           ├── ts0726_scene_switch_TZ3002_v0xabl0o.py      # Simon 9-241E8008TY — TS0726 4-gang panel as switches
 │           ├── ts0726_scene_switch_TZ3210_5nd2aydx.py      # Simon 10-66E8025 — TS0726 8-gang panel
 │           ├── ts110d_dimmer_TZ3210_1znecg8a.py            # Simon 15-66E8015 — TS110D 1-gang dimmer
+│           ├── ts130f_cover_TZ3000_9hadsgq9.py             # WOOW WO_50801_5 — TS130F dry-contact curtain module
 │           └── tuya_cover_nogaemzt.py                      # Tuya curtain track motor
 │
+├── docs/
+│   ├── adr/                                                # Architecture decision records
+│   ├── agents/                                             # Agent skill docs (issue tracker, triage labels, domain)
+│   ├── simon-product/                                      # Per-SKU sniff findings
+│   └── woow-product/
+├── tests/                                                  # pytest suite (climate platform state handling)
 ├── CONTEXT.md                                              # Domain glossary (the four meanings of "scene", gang/gang-mode, …)
 ├── hacs.json                                               # HACS metadata
 ├── LICENSE                                                 # MIT License
@@ -950,7 +971,7 @@ Woow_ha_zha_quirk_component/
 
 ### Prerequisites
 
-- Home Assistant 2025.1+
+- Home Assistant 2026.3+ (2026.7 / zha 2.0 supported, with a 2026.3 fallback path)
 - Python 3.12+
 - ZHA integration configured with a Zigbee coordinator
 - `zha-quirks` and `zigpy` packages
@@ -974,6 +995,14 @@ from zhaquirks.tuya.builder import TuyaQuirkBuilder
 ```
 
 3. Restart Home Assistant — the auto-loader picks up new files automatically
+
+### Tests
+
+```bash
+pytest tests/
+```
+
+`tests/` covers `climate.py`, the one module with logic worth testing off-device. It needs no Home Assistant install: `tests/conftest.py` stubs the handful of HA names `climate.py` imports and loads the module straight from its path, so the integration's `__init__.py` never runs.
 
 ---
 

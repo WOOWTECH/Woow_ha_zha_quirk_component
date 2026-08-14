@@ -14,8 +14,11 @@ TS110E firmware family, which has two quirks:
   1. Brightness is *also* reported on the manufacturer attribute 0xF000, but on
      this variant in the SAME 0..254 domain as current_level (verified on
      hardware: a 50% set reported 0xF000≈127). Unlike the older _TZ3210_ngqk6jia,
-     this variant DOES honour standard move_to_level* commands (it presented as a
-     working standard dimmer before this quirk), so we must NOT route writes
+     this variant honours standard move_to_level* commands **while the lamp is
+     already on** (it presented as a working standard dimmer before this quirk);
+     while the lamp is off it answers SUCCESS and acts on neither the level nor
+     the implicit on, which the quirk works around by sending On first — see
+     "Level commands need the lamp already on" below. We must NOT route writes
      through the Tuya custom command 0x00F0 — the upstream
      F000LevelControlCluster.command() override returns None for that path and
      crashes zha's light.async_turn_on ("TypeError: 'NoneType' object is not
@@ -88,6 +91,23 @@ Do not be fooled by a read-back: reading 0xFC03/0xFC04 from the device returns
 the stored value, not the committed one, so the two can disagree indefinitely.
 The only honest test is to command a level and see where it lands.
 
+Level commands need the lamp already on (issue #4)
+--------------------------------------------------
+move_to_level_with_on_off (and its move/step siblings) is answered with a
+SUCCESS default response while the lamp is off, after which the firmware acts
+on neither the implicit "on" nor the level. Home Assistant's "turn on at
+brightness X" is exactly that command, so the lamp stayed dark while HA
+believed it was lit. Confirmed still present on 2026-08-14: with the lamp off,
+light.turn_on brightness=200 left on_off false (the level was stored, and only
+took effect the next time the lamp was switched on some other way).
+
+TS110DLevelControl.command() therefore sends OnOff On first whenever the cached
+on_off says the lamp is off. The Tuya gateway never hits this because it drives
+level with the private 0x00F0 command and never uses move_to_level* at all;
+routing through 0x00F0 was considered and rejected, because the upstream
+F000LevelControlCluster.command() override returns None on that path and
+crashes zha's light.async_turn_on (see (1) above).
+
 Everything below was tested and is NOT the gate. Do not re-litigate without new
 evidence; all of it is on the wire in captures/ts110d_mfgcode_ch25.pcap:
 
@@ -115,13 +135,14 @@ reads as unsupported on this variant, so bulb/dimming-mode attrs are declared
 but not exposed.
 """
 
+import asyncio
 import logging
 from typing import Final
 
 import zigpy.types as t
 from zigpy.quirks import CustomCluster
 from zigpy.quirks.v2 import EntityType, QuirkBuilder
-from zigpy.zcl.clusters.general import LevelControl
+from zigpy.zcl.clusters.general import LevelControl, OnOff
 from zigpy.zcl.foundation import ZCLAttributeDef
 
 from zhaquirks.tuya import TuyaZBOnOffAttributeCluster
@@ -131,6 +152,21 @@ _LOGGER = logging.getLogger(__name__)
 
 ONOFF = TuyaZBOnOffAttributeCluster.cluster_id  # 0x0006
 LEVEL = LevelControl.cluster_id  # 0x0008
+ONOFF_ATTR_ON_OFF = OnOff.AttributeDefs.on_off.id  # 0x0000
+ONOFF_CMD_ON = OnOff.ServerCommandDefs.on.id  # 0x01
+
+# LevelControl commands that carry an implicit "turn on". This firmware answers
+# all of them with a SUCCESS default response while the lamp is off and then
+# acts on neither half -- see issue #4 -- so the On has to be sent separately.
+WITH_ON_OFF_COMMANDS = frozenset(
+    {
+        LevelControl.ServerCommandDefs.move_to_level_with_on_off.id,  # 0x04
+        LevelControl.ServerCommandDefs.move_with_on_off.id,  # 0x05
+        LevelControl.ServerCommandDefs.step_with_on_off.id,  # 0x06
+    }
+)
+# Time for the lamp to actually be running before it will accept a level.
+ON_SETTLE_DELAY = 0.5
 
 # Tuya private LevelControl attribute IDs
 TUYA_LEVEL = 0xF000  # brightness report (same 0..254 domain as current_level)
@@ -210,6 +246,48 @@ class TS110DLevelControl(CustomCluster, LevelControl):
             raw = super().get(key, None)
             return default if raw is None else round(raw * 100 / 255)
         return super().get(key, default)
+
+    def _resolve_command_id(self, command_id):
+        """Accept an id, a name or a ZCLCommandDef and return the numeric id."""
+        try:
+            return self.server_commands[command_id].id
+        except (KeyError, TypeError, AttributeError):
+            return getattr(command_id, "id", command_id)
+
+    def _lamp_is_on(self) -> bool:
+        onoff = self.endpoint.in_clusters.get(ONOFF)
+        if onoff is None:
+            # Nothing we can do about it, so do not add a pointless frame.
+            return True
+        return bool(onoff.get(ONOFF_ATTR_ON_OFF, False))
+
+    async def command(self, command_id, *args, **kwargs):
+        """Send On before a *_with_on_off level command if the lamp is off.
+
+        The firmware discards both halves of move_to_level_with_on_off while
+        the lamp is off -- and answers SUCCESS, so nothing upstream notices.
+        Home Assistant's "turn on at brightness X" is exactly that command, so
+        without this the lamp stays dark while HA believes it is lit (#4).
+
+        The On is skipped when the cached on_off already says the lamp is
+        running, which is the common case for a brightness change and keeps
+        slider drags to one frame each. That trusts the cache: this device
+        reports on_off changes promptly, including presses at the wall, so a
+        stale "on" is unlikely -- and its only cost is that one brightness
+        command is dropped, exactly as it is today.
+        """
+        if (
+            self._resolve_command_id(command_id) in WITH_ON_OFF_COMMANDS
+            and not self._lamp_is_on()
+        ):
+            onoff = self.endpoint.in_clusters.get(ONOFF)
+            try:
+                await onoff.command(ONOFF_CMD_ON)
+                await asyncio.sleep(ON_SETTLE_DELAY)
+                self.debug("sent On before a level command; the lamp was off (#4)")
+            except Exception as exc:  # noqa: BLE001 - still try the level command
+                self.debug("could not send On before the level command (%s)", exc)
+        return await super().command(command_id, *args, **kwargs)
 
     async def write_attributes(self, attributes, manufacturer=None, **kwargs):
         """Write min/max as a raw 1..255 PAIR, in one frame.

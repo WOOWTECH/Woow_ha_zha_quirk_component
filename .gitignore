@@ -13,6 +13,11 @@ private/
 sniffer-related/
 docs/*
 !docs/img/
+!docs/adr/
+!docs/agents/
 
 # CLAUDE.md
 CLAUDE.md
+
+# .playwright-cli
+.playwright-cli/

@@ -52,7 +52,14 @@ Quirk adds / fixes:
      read mirroring.
   2. Min / Max brightness (0xFC03 / 0xFC04) as writable config numbers in
      percent, always written as a pair — see "Min/max only commit when written
-     as a pair" below.
+     as a pair" below — and refused if they would leave max at or below min
+     (issue #5). The device accepts an inverted window silently, so that guard
+     is ours, not the firmware's. The Tuya app's further "max - min >= 30 %"
+     rule is deliberately NOT copied: it exists because the app's brightness
+     slider is relative to the [min, max] window, so a narrow window destroys
+     its resolution. Home Assistant's brightness is absolute, so the reason does
+     not carry over, and enforcing it would only block legitimate narrow
+     windows.
   3. Indicator (backlight) LED mode select (OnOff 0x8001) — labels mapped to the
      app's DP102 (none / enable_white / enable_yellow).
   4. Suppress the useless default LevelControl config entities and the raw
@@ -140,6 +147,7 @@ import logging
 from typing import Final
 
 import zigpy.types as t
+from zigpy.exceptions import ZigbeeException
 from zigpy.quirks import CustomCluster
 from zigpy.quirks.v2 import EntityType, QuirkBuilder
 from zigpy.zcl.clusters.general import LevelControl, OnOff
@@ -305,6 +313,9 @@ class TS110DLevelControl(CustomCluster, LevelControl):
             in force. Measured directly -- see the module docstring. Putting
             both in a single frame makes the commit unconditional and is
             strictly tighter than the ~100 ms pair the Tuya gateway sends.
+
+        The completed pair is then checked for min < max and the whole write is
+        rejected if it is not -- see _reject_inverted_window.
         """
         converted = {}
         touches_limits = False
@@ -318,8 +329,68 @@ class TS110DLevelControl(CustomCluster, LevelControl):
 
         if touches_limits:
             await self._complete_limit_pair(converted)
+            self._reject_inverted_window(converted, set(attributes))
 
         return await super().write_attributes(converted, manufacturer, **kwargs)
+
+    @staticmethod
+    def _pct(raw: int) -> int:
+        """Raw 1..255 as the percent the user sees on the entity."""
+        return round(raw * 100 / 255)
+
+    @staticmethod
+    def _pick(converted: dict, attr_id: int, name: str):
+        """Read a limit out of the write dict, whichever key form was used."""
+        if attr_id in converted:
+            return converted[attr_id]
+        return converted.get(name)
+
+    def _reject_inverted_window(self, converted: dict, requested: set) -> None:
+        """Refuse a write that would leave max at or below min.
+
+        The device accepts an inverted window without complaint -- measured:
+        min 90 % / max 50 % is written, acknowledged and read back -- and then
+        behaves in a way nobody asked for. So this is our rule, not the
+        firmware's, and it is enforced here rather than through the entity
+        bounds because ZHA takes a quirk's number min/max as static and cannot
+        narrow one entity's range from the other's current value.
+
+        Rejecting rather than silently adjusting the partner is deliberate. A
+        value the user did not type is exactly the kind of quiet wrongness that
+        made issue #3 take as long as it did; a refusal that names the value in
+        the way is worse for one click and better forever after. The message
+        says which entity to move first, because with two coupled numbers the
+        legal path can depend on the order they are changed.
+
+        A pair that cannot be completed (partner unknown and unreadable) is let
+        through: the write itself is about to fail anyway on an unreachable
+        device, and locking the control over an unverifiable rule is worse than
+        the rule going unenforced for one write.
+        """
+        lo = self._pick(converted, TUYA_MIN_LEVEL, "manufacturer_min_level")
+        hi = self._pick(converted, TUYA_MAX_LEVEL, "manufacturer_max_level")
+        if lo is None or hi is None or lo < hi:
+            return
+
+        wants_min = bool(requested & {TUYA_MIN_LEVEL, "manufacturer_min_level"})
+        wants_max = bool(requested & {TUYA_MAX_LEVEL, "manufacturer_max_level"})
+        if wants_min and not wants_max:
+            msg = (
+                f"Max Brightness is {self._pct(hi)} %, so Min Brightness cannot be "
+                f"set to {self._pct(lo)} %. Raise Max Brightness first."
+            )
+        elif wants_max and not wants_min:
+            msg = (
+                f"Min Brightness is {self._pct(lo)} %, so Max Brightness cannot be "
+                f"set to {self._pct(hi)} %. Lower Min Brightness first."
+            )
+        else:
+            msg = (
+                f"Min Brightness {self._pct(lo)} % must be below Max Brightness "
+                f"{self._pct(hi)} %."
+            )
+        self.debug("rejecting inverted brightness window: %s", msg)
+        raise ZigbeeException(msg)
 
     async def _complete_limit_pair(self, converted: dict) -> None:
         """Add whichever of min/max is missing, so both go out in one frame."""

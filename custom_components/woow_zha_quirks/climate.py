@@ -16,6 +16,19 @@ It is auto-discovered: on HA start it scans the device registry for any known de
 (see DEVICE_SPECS) and resolves the backing entities by their stable ZHA unique-id
 suffixes, then hides them so only the single climate entity remains on the device card.
 
+Staying in sync with the device is the hard part, because everything this entity shows is
+second-hand. Three rules, all learned the hard way on real hardware (see
+docs/adr/0001-backing-state-semantics.md):
+
+  * The power switch is the only authority on off-vs-running. If it cannot be read, the
+    hvac_mode is left alone -- never inferred from the mode select.
+  * A backing entity that is *absent* from the state machine is ZHA rebuilding it and means
+    nothing; a backing entity that is explicitly *unavailable* means the device is
+    unreachable and makes this entity unavailable too.
+  * The state-change subscription is a fast path, not a guarantee. A 60 s reconcile
+    (SCAN_INTERVAL) bounds how long a missed delivery can keep this entity stale, and a
+    5 min platform watchdog (WATCHDOG_INTERVAL) rebuilds a climate that has vanished.
+
 Supported devices:
   - 14-66E7109TY  (_TZC200_qbuzgrdocufrqgdu / SM0308F) — Tuya 0xEF00 panel
   - 8-58E7101     (_TZ2000_cykrrj2x / SM0308C)        — standard-ZCL fan-coil thermostat
@@ -28,6 +41,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.components.climate import (
@@ -51,7 +65,10 @@ from homeassistant.const import (
 )
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.start import async_at_start
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -61,6 +78,23 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "woow_zha_quirks"
 DATA_CREATED = "woow_zha_quirks_climate_created"
+
+# How often each climate reconciles itself against its backing entities. The
+# state-change subscription is the fast path; this is the safety net that bounds how long
+# a missed delivery can keep the entity stale. Reads the HA state machine only -- it
+# produces no Zigbee traffic, so the integration stays local_push in substance.
+SCAN_INTERVAL = timedelta(seconds=60)
+
+# How often the platform re-runs discovery. Registry events already drive it; this only
+# catches the case where the entity behind the `created` guard has vanished, which no
+# event would report.
+WATCHDOG_INTERVAL = timedelta(minutes=5)
+
+# Roles that decide hvac_mode. If one of these is explicitly `unavailable` the device is
+# unreachable and the climate must say so rather than serve a stale reading. The rest
+# (fan, preset, temperature, current_temp) only fill in attributes, so losing them keeps
+# the last known value and never affects availability.
+ESSENTIAL_ROLES = ("power", "mode")
 
 HVAC_TO_ACTION = {
     HVACMode.COOL: HVACAction.COOLING,
@@ -231,17 +265,27 @@ async def async_setup_platform(
             # device.id, so the guard alone would skip the device forever.
             if ieee in created:
                 row = _existing_row(ent_reg, ieee)
+                live = row is not None and hass.states.get(row.entity_id) is not None
                 _LOGGER.debug(
                     "discover: %s %s guard hit (created=%s, device=%s, row=%s, live_state=%s)",
                     spec.model, ieee, created.get(ieee), device.id,
-                    row.entity_id if row is not None else None,
-                    hass.states.get(row.entity_id) is not None if row is not None else None,
+                    row.entity_id if row is not None else None, live,
                 )
-                if row is not None:
+                if live:
                     _repair_row(ent_reg, row, device.id)
-                created[ieee] = device.id
-                _hide_backing(ent_reg, entries)
-                continue
+                    created[ieee] = device.id
+                    _hide_backing(ent_reg, entries)
+                    continue
+                # The guard is held for an entity that is no longer in the state machine, so
+                # nothing is driving this climate and no event will ever say so -- async_will_
+                # remove_from_hass is what normally clears the guard, and it did not run. Drop
+                # the guard and fall through to rebuild. This is the branch the 5-minute
+                # watchdog exists to reach.
+                _LOGGER.warning(
+                    "WOOW ZHA Quirks: %s %s was guarded but its entity is gone; rebuilding",
+                    spec.model, ieee,
+                )
+                created.pop(ieee, None)
 
             dev_name = device.name_by_user or device.name or f"{spec.model} {ieee}"
             # Claim the guard FIRST: _prepare_registry_row() below can create the registry row,
@@ -276,6 +320,10 @@ async def async_setup_platform(
     async_at_start(hass, _discover)
     hass.bus.async_listen(dr.EVENT_DEVICE_REGISTRY_UPDATED, _discover)
     hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, _on_entity_added)
+    # Platform-level watchdog. It deliberately does NOT hang off an entity: the failure it
+    # covers is "the climate is gone and nothing rebuilt it", and an entity that no longer
+    # exists cannot poll itself.
+    async_track_time_interval(hass, _discover, WATCHDOG_INTERVAL)
 
 
 def _object_id(device_name: str) -> str:
@@ -360,7 +408,9 @@ def _hide_backing(ent_reg: er.EntityRegistry, entries) -> None:
 class WoowClimate(ClimateEntity, RestoreEntity):
     """One climate entity proxying a device's discrete ZHA entities (per DeviceSpec)."""
 
-    _attr_should_poll = False
+    # Polled on SCAN_INTERVAL purely to reconcile with the backing entities -- see
+    # async_update(). No I/O, no Zigbee traffic.
+    _attr_should_poll = True
     _attr_has_entity_name = False
     _enable_turn_on_off_backwards_compatibility = False
 
@@ -463,26 +513,63 @@ class WoowClimate(ClimateEntity, RestoreEntity):
         self._recompute()
         self.async_write_ha_state()
 
-    def _state(self, role: str) -> str | None:
-        """Return a backing entity's state, or None if unavailable/absent."""
+    async def async_update(self) -> None:
+        """Reconcile against the backing entities.
+
+        The state-change subscription is the fast path; this is the safety net. On
+        2026-08-13 an entire ZHA restore batch never reached the listener and the entity
+        sat on a stale reading for three minutes, recovering only when an unrelated later
+        report happened to arrive -- with nothing in the design guaranteeing that it ever
+        would. Re-reading here bounds that staleness to SCAN_INTERVAL.
+        """
+        self._recompute()
+
+    def _raw(self, role: str) -> str | None:
+        """The literal backing state, or None when the entity is not in the state machine.
+
+        Absence and the literal "unavailable" mean different things and must not be
+        conflated: absence is ZHA rebuilding the entity (transient, say nothing), while
+        "unavailable" is ZHA reporting the device unreachable (surface it).
+        """
         eid = self._ent.get(role)
         if eid is None:
             return None
         st = self.hass.states.get(eid)
-        if st is None or st.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+        return None if st is None else st.state
+
+    def _state(self, role: str) -> str | None:
+        """Return a backing entity's usable state, or None if there isn't one."""
+        raw = self._raw(role)
+        if raw is None or raw in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             return None
-        return st.state
+        return raw
+
+    @property
+    def available(self) -> bool:
+        """False once ZHA reports the device unreachable.
+
+        Only an explicit "unavailable" on a role that decides hvac_mode counts. A backing
+        entity that is merely absent is ZHA rebuilding it, which lasts milliseconds and
+        must not flap this entity.
+        """
+        return not any(self._raw(role) == STATE_UNAVAILABLE for role in ESSENTIAL_ROLES)
 
     @callback
     def _recompute(self) -> None:
         """Recompute climate facets from the backing entity states."""
         power = self._state("power")
         mode_opt = self._state("mode")
-        if power is not None and power != STATE_ON:
-            self._attr_hvac_mode = HVACMode.OFF
-        elif mode_opt is not None and mode_opt in self._spec.mode_option_to_hvac:
-            self._attr_hvac_mode = self._spec.mode_option_to_hvac[mode_opt]
-            self._last_on_mode = self._attr_hvac_mode
+        # The power switch is the only authority on off-vs-running. When it cannot be read,
+        # the honest answer is "unchanged": inferring from the mode select instead reports a
+        # running mode for a unit that is off. That is what happened on 2026-08-13
+        # 18:31:38.886 -- power='unavailable' produced hvac_mode=cool, corrected 106 ms later
+        # only because the switch happened to be restored last.
+        if power is not None:
+            if power != STATE_ON:
+                self._attr_hvac_mode = HVACMode.OFF
+            elif mode_opt is not None and mode_opt in self._spec.mode_option_to_hvac:
+                self._attr_hvac_mode = self._spec.mode_option_to_hvac[mode_opt]
+                self._last_on_mode = self._attr_hvac_mode
 
         fan = self._state("fan")
         if fan in self._spec.fan_modes:
@@ -506,18 +593,18 @@ class WoowClimate(ClimateEntity, RestoreEntity):
                 pass
 
         if _LOGGER.isEnabledFor(logging.DEBUG):
-            # Distinguish "<missing>" (entity not in the state machine at all -- ZHA is
-            # rebuilding it) from the literal "unavailable" string (ZHA says the device is
-            # unreachable). _state() collapses both to None, which is exactly the ambiguity
-            # under investigation.
+            # "<missing>" is an entity absent from the state machine (ZHA rebuilding it);
+            # the literal "unavailable" is ZHA reporting the device unreachable. The two
+            # drive different behaviour now, so the log has to keep them apart.
             snap = {
-                role: "<missing>" if (st := self.hass.states.get(eid)) is None else st.state
-                for role, eid in self._ent.items()
+                role: "<missing>" if (raw := self._raw(role)) is None else raw
+                for role in self._ent
             }
             _LOGGER.debug(
-                "%s recompute: backing=%s -> hvac_mode=%s fan=%s preset=%s target=%s current=%s",
-                self.entity_id, snap, self._attr_hvac_mode, self._attr_fan_mode,
-                self._attr_preset_mode, self._attr_target_temperature,
+                "%s recompute: backing=%s -> available=%s hvac_mode=%s fan=%s preset=%s "
+                "target=%s current=%s",
+                self.entity_id, snap, self.available, self._attr_hvac_mode,
+                self._attr_fan_mode, self._attr_preset_mode, self._attr_target_temperature,
                 self._attr_current_temperature,
             )
 

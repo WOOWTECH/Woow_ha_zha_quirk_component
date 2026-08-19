@@ -60,7 +60,7 @@
 | 14 | Simon SM0301 | 1-CH Curtain Controller | `_TYZB01_koulgwmy` | `simon_sm0301_curtain.py` | `cover` + `number` | Phantom EP2-4 removal, binary_sensor suppression, OnOff→Level open/close redirect, **time-based positioning** (accurate intermediate positions; native level positioning is nonlinear), no "device did not respond", Travel Time in seconds (1-180 s) |
 | 15 | Tuya 3-Gang Screen Switch | 3-Gang Touch Switch | `_TZE204_k7v0eqke` | `ts0601_switch_TZE204_k7v0eqke.py` | `switch` | Screen label auto-sync, countdown timer, child lock, LED colors |
 | 16 | Simon 10-66E8025 | TS0726 8-Gang Scene+Switch Panel | `_TZ3210_5nd2aydx` | `ts0726_scene_switch_TZ3210_5nd2aydx.py` | `switch` + `select` | 8 switches mapped EP1-8 = physical switches 1-8 (phantom EP9 removed), all gangs force-set to regular-relay (Switch) mode on startup — scene mode disabled, mode selects removed (0xE001 0xD020), indicator LED mode (Close / Off white On orange / Off orange On white — each option is an *off-colour/on-colour pair*, same wording as the 66E8015 dimmer), dead StartUpOnOff selects suppressed, firmware entities collapsed to 1 |
-| 17 | Simon i7 17-70E857TY | TS1002 0-10V Smart Dimming Remote Switch (2-gang) | `_TZ3000_qe3d5gga` | `simon_i7_70e857ty_dimmer.py` | `binary_sensor` + `select` | 2 gang On/Off **binary_sensors** (Gang 1 / Gang 2) that **mirror** the physical wall-switch state — device is a remote whose server OnOff rejects on/off (`UNSUP_CLUSTER_COMMAND`), so the control-less default switches are suppressed and replaced with read-only binary_sensors; single device-global Status Light indicator mode (Close / Switch Status / Switch Position), Identify button + duplicate firmware/OTA entities removed, dead StartUpOnOff selects suppressed |
+| 17 | Simon i7 17-70E857TY | TS1002 0-10V Smart Dimming Remote Switch (2-gang) | `_TZ3000_qe3d5gga` | `simon_i7_70e857ty_dimmer.py` | `binary_sensor` + `sensor` + `select` | 2 gang On/Off **binary_sensors** (Gang 1 / Gang 2) that **mirror** the physical wall-switch state — device is a remote whose server OnOff rejects on/off (`UNSUP_CLUSTER_COMMAND`), so the control-less default switches are suppressed and replaced with read-only binary_sensors; 2 per-gang Brightness **sensors** (%) fed by the slide-dim `current_level`, which reports on push; single device-global Status Light indicator mode (Close / Switch Status / Switch Position), Identify button + duplicate firmware/OTA entities removed, dead StartUpOnOff selects suppressed |
 | 18 | Simon 4-58E8017 | TS0034 Rotary CCT Knob (controller) | `_TZ3000_ocqo8iwd` | `simon_58e8017_knob.py` | `zha_event` + `binary_sensor` + `sensor` ×2 | Rotary knob remote — press → OnOff `on`/`off`, rotate → LevelControl `step` (up/down), colour-mode rotate → **Tuya `0xE0`** decoded to a clean `tuya_set_color_temp` event (cluster 768, `temp_value` 0-1000). Also exposes 3 read-only **entities** reflecting its actions: On/Off `binary_sensor`, Colour Temperature `sensor` (0–100%), Brightness `sensor` (0–100%, approx). Stock Identify button + firmware/OTA `update` entity suppressed. **Needs a group bind** (knob multicasts to group `0x2760`; ZHA's unicast bind-to-coordinator is ignored by the Tuya firmware) — **the component now creates this automatically** on (re-)pair, plus a `woow_zha_quirks.rebind_knob` service to force it (see `knob_rebind.py`) |
 | 19 | Simon 2-58E8002 | 2-Gang Smart Switch | `_TZ2000_euqqstyrbiynph3m` | `simon_58e8002_switch.py` | `switch` + `select` | 2 native OnOff gangs; `TuyaZBOnOffAttributeCluster` surfaces the indicator LED mode (Close / Switch Status / Switch Position); dead StartUpOnOff + firmware/OTA entities suppressed |
 | 20 | Simon 3-70E8304 (S2100-1004 variant) | 4-Gang Smart Switch | `_TZ2000_kgwm3i4o4klbuaks` | `simon_i7_s2100.py` | `switch` | Second 4-gang variant registered by the Simon i7 builder; Indicator LED + All On/Off virtual endpoint |
@@ -109,6 +109,7 @@ lamp. Profile/device_type `0x0104` (DIMMER_SWITCH), two identical gang endpoints
 | Feature | Cluster | Attribute | EP | Entity Type | Description |
 |---------|---------|-----------|-----|-------------|-------------|
 | Gang 1 / Gang 2 state | 0x0006 | `on_off` | 1, 2 | `binary_sensor` (Standard) | Read-only on/off mirror of the physical gang state |
+| Gang 1 / Gang 2 brightness | 0x0008 | `current_level` | 1, 2 | `sensor` (Standard, %) | Read-only slide-dim level, 0-254 raw shown as 0-100 % |
 | Status Light | 0x0006 | `backlight_mode` (0x8001) | 1 | Config (`select`) | Close (0, off) / Switch Status (1, LED on when gang ON) / Switch Position (2, LED on when gang OFF) |
 
 **Control note (operator-verified):** the device is a *remote* — its server OnOff
@@ -116,11 +117,21 @@ cluster rejects `on`/`off` commands (`UNSUP_CLUSTER_COMMAND`), so a `switch` ent
 never drive it. The quirk therefore **suppresses the default switches and exposes the two
 gang states as read-only `binary_sensor` entities** (Gang 1 / Gang 2) that mirror the
 physical wall-switch state. The real 0-10V load is controlled by the separate Simon
-converter module, which is not part of the ZHA network. The LevelControl (slide-dim) and
-Color output clusters are left unexposed (entity set = 2 binary_sensors + 1 Status Light
-select). A sniff of the gang presses shows each
+converter module, which is not part of the ZHA network. The Color output cluster is left
+unexposed (entity set = 2 binary_sensors + 2 Brightness sensors + 1 Status Light select).
+A sniff of the gang presses shows each
 gang emits a standard OnOff On/Off — so the presses can alternatively be used as HA
 `zha_event` triggers by binding each gang's OnOff output to the ZHA coordinator.
+
+**Dimming note (operator-verified 2026-08-19):** `current_level` on each gang *does*
+record the slide-dim level — a live slide of gang 2 walked it `19 → 196 → 255 → 133 → 0`
+over eight seconds, and the value persists after the gesture. ZHA binds and configures
+reporting for it (min 1 s / max 900 s / change 1) and the device accepts it, so the
+sensors update on push. Two wrinkles the quirk handles: the firmware's full scale is
+**255**, not the ZCL 254, and 255 is exactly the uint8 "non value" sentinel that ZHA
+blanks to `unknown` — so `WoowLevelControlCluster` clamps a reported 255 down to 254.
+A device paired before this quirk gained the sensors needs one *Reconfigure device* for
+the reporting binding to be written.
 
 ---
 

@@ -36,7 +36,10 @@ OnOff with ``TuyaZBOnOffAttributeCluster`` on each gang.  That:
   * surfaces the Tuya indicator-LED attribute ``backlight_mode`` (0x8001),
     which we expose as a single device-global "Status Light" select on EP1.
 
-It trims the device to the desired set (2 binary_sensors + 1 select):
+It also exposes each gang's slide-dim level from the standard LevelControl
+cluster as a read-only percent ``sensor`` (see the dimming note below).
+
+It trims the device to the desired set (2 binary_sensors + 2 sensors + 1 select):
   * suppress the control-less default Switch on each gang (replaced by a
     binary_sensor — see the control note),
   * suppress the native StartUpOnOff "power-on behaviour" select on both gangs
@@ -45,6 +48,27 @@ It trims the device to the desired set (2 binary_sensors + 1 select):
   * collapse the duplicate per-endpoint firmware/OTA "update" entities.
 
 Status-light values are operator-verified live (see ``WoowStatusLight``).
+
+Dimming note (operator-verified 2026-08-19)
+-------------------------------------------
+``current_level`` (0x0008 / 0x0000) on each gang **does** record the slide-dim
+level, contrary to the earlier assumption that it was a static parameter.  Live
+over-the-air reads (``allow_cache=False``) while an operator slid gang 2 from
+minimum to maximum and back walked the value ``19 -> 196 -> 255 -> 133 -> 0``
+over eight seconds, with the gang's ``on_off`` toggling either side of the
+gesture as a positive control.  The value **persists** after the gesture — the
+earlier flat readings of 0 / 1 / 3 were genuine levels left over from previous
+slides, not a dead attribute.  Full scale reads 255, not the ZCL 254, which is
+why ``WoowLevelControlCluster`` exists.
+
+ZHA binds and configures reporting for current_level (min 1 s / max 900 s /
+change 1) and the device accepts it, so the sensors update on push — no polling.
+A device that was paired before this quirk gained the sensors needs one
+"Reconfigure device" for that binding to be written.
+
+The rest of the LevelControl attributes (0x0010-0x0014, 0x4000) answer
+UNSUPPORTED_ATTRIBUTE, and the manufacturer min/max-brightness attributes the
+sibling SM0502 carries (0xFC00 / 0xFC01) do not exist here.
 
 Control note (operator-verified)
 --------------------------------
@@ -59,8 +83,9 @@ tapped, so we model the two gangs as read-only **binary_sensor** entities
 import enum
 import logging
 
+from zigpy.quirks import CustomCluster
 from zigpy.quirks.v2 import EntityType, QuirkBuilder
-from zigpy.zcl.clusters.general import Identify, OnOff, Ota
+from zigpy.zcl.clusters.general import Identify, LevelControl, OnOff, Ota
 
 from zhaquirks.tuya import TuyaZBOnOffAttributeCluster
 
@@ -68,9 +93,37 @@ _LOGGER = logging.getLogger(__name__)
 
 ONOFF = TuyaZBOnOffAttributeCluster.cluster_id  # 0x0006
 IDENTIFY = Identify.cluster_id  # 0x0003
+LEVEL = LevelControl.cluster_id  # 0x0008
 OTA = Ota.cluster_id  # 0x0019
 
+# current_level full scale, after WoowLevelControlCluster clamps the firmware's
+# out-of-spec 255 down to the ZCL maximum.
+LEVEL_FULL_SCALE = 254
+
 _ENDPOINTS = (1, 2)  # the two gangs
+
+
+class WoowLevelControlCluster(CustomCluster, LevelControl):
+    """LevelControl that keeps a full-brightness report visible.
+
+    This firmware runs current_level over 0..255, but 0xFF is the ZCL "non value"
+    sentinel for uint8, and ZHA drops any sensor value equal to it
+    (``zha/application/platforms/sensor/__init__.py`` -> ``_is_non_value``).  A
+    slide that reaches the top therefore blanked the Brightness sensor to
+    ``unknown`` mid-sweep (operator-verified: 0 -> 70 % -> unknown -> 64 % -> 0).
+
+    Clamping 255 to the ZCL maximum 254 costs nothing — the two are the same
+    brightness to a percent-scaled sensor — and keeps full brightness readable as
+    100 %.  Reads go through ``_update_attribute`` as well as reports, so both
+    paths are covered.
+    """
+
+    _CURRENT_LEVEL = LevelControl.AttributeDefs.current_level.id  # 0x0000
+
+    def _update_attribute(self, attrid, value):
+        if attrid == self._CURRENT_LEVEL and value == 0xFF:
+            value = 0xFE
+        super()._update_attribute(attrid, value)
 
 
 # Status-light (indicator LED) mode — backlight_mode attr 0x8001 on OnOff.
@@ -85,6 +138,15 @@ class WoowStatusLight(enum.IntEnum):
     Close = 0            # LED never lit (indicator disabled)
     Switch_Status = 1    # LED lit when gang is ON
     Switch_Position = 2  # LED lit when gang is OFF (locator)
+
+
+def _level_to_pct(value):
+    """current_level 0..255 -> 0..100 %. None-safe for the UI."""
+    try:
+        v = max(0, min(LEVEL_FULL_SCALE, int(value)))
+    except (TypeError, ValueError):
+        return None
+    return round(v / LEVEL_FULL_SCALE * 100)
 
 
 def _is_button(e) -> bool:
@@ -106,6 +168,7 @@ _builder = QuirkBuilder("_TZ3000_qe3d5gga", "TS1002")
 for _ep in _ENDPOINTS:
     _builder = (
         _builder.replaces(TuyaZBOnOffAttributeCluster, endpoint_id=_ep)
+        .replaces(WoowLevelControlCluster, endpoint_id=_ep)
         .prevent_default_entity_creation(
             endpoint_id=_ep, cluster_id=ONOFF, function=_is_switch
         )
@@ -119,6 +182,20 @@ for _ep in _ENDPOINTS:
             entity_type=EntityType.STANDARD,
             translation_key=f"gang_{_ep}",
             fallback_name=f"Gang {_ep}",
+        )
+        # Slide-dim level. Operator-verified live: sliding gang 2 walked
+        # current_level 19 -> 196 -> 255 -> 133 -> 0 over 8 s, and the value
+        # persists after the gesture (it is the last level, not a transient).
+        .sensor(
+            WoowLevelControlCluster.AttributeDefs.current_level.name,  # 0x0000
+            LEVEL,
+            endpoint_id=_ep,
+            entity_type=EntityType.STANDARD,
+            unit="%",
+            suggested_display_precision=0,
+            attribute_converter=_level_to_pct,
+            translation_key=f"gang_{_ep}_brightness",
+            fallback_name=f"Gang {_ep} Brightness",
         )
     )
 

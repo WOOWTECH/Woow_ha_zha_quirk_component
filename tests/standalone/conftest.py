@@ -24,7 +24,8 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# tests/standalone/conftest.py -> repo root is three levels up.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CLIMATE_PY = REPO_ROOT / "custom_components" / "woow_zha_quirks" / "climate.py"
 
 
@@ -133,6 +134,15 @@ def _install_stubs() -> None:
     )
     _module("homeassistant.helpers.start", async_at_start=noop)
     _module("homeassistant.helpers.typing", ConfigType=dict, DiscoveryInfoType=dict)
+    # Since 1.4.0 climate.py is a config-entry platform, so it imports these two.
+    _module(
+        "homeassistant.config_entries",
+        ConfigEntry=type("ConfigEntry", (), {}),
+    )
+    _module(
+        "homeassistant.helpers.entity_platform",
+        AddConfigEntryEntitiesCallback=object,
+    )
     _module("homeassistant.util", slugify=slugify)
 
 

@@ -28,3 +28,12 @@ apply_presence_defaults:
     are applied automatically ONCE on first pairing (persisted, so later manual
     changes survive restarts); use this service to force a re-apply on demand.
     Targets all paired sensors matching the manufacturer/model. Takes no parameters.
+
+resync_relay:
+  name: Re-sync 21-TYZGTH1CH-D1RF relay state
+  description: >-
+    Re-read the on/off state of the 21-TYZGTH1CH-D1RF relay module. The device does not
+    report its state after a power-cycle and ZHA does not re-read it on rejoin, so the
+    Home Assistant switch can sit on a stale value until something writes to it. Runs
+    automatically at startup, on (re-)join, and on a periodic backstop; use this service
+    to force it on demand. Takes no parameters.

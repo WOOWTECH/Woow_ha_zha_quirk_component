@@ -1,0 +1,10 @@
+# Test dependencies for tests/ha (the standalone suite needs none of this).
+#
+# Pinned to the Home Assistant release the reference ZHA host runs, 2026.7.2 -- the point
+# of these tests is that the code is correct on the machine the customer has, not on the
+# newest core. pytest-homeassistant-custom-component pins homeassistant itself; zha and
+# zha-quirks match that release's zha manifest so the quirk modules import exactly as they
+# do in production. See docs/adr/0005-config-entry-setup.md.
+pytest-homeassistant-custom-component==0.13.346
+zha==2.0.0
+zha-quirks==2.1.1

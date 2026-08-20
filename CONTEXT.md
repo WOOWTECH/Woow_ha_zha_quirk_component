@@ -135,10 +135,20 @@ manufacturer/model, keyed on the pair of the two.
 _Avoid_: device handler, custom device
 
 **Datapoint (DP)**:
-A numbered value in Tuya's private MCU protocol (cluster 0xEF00). Tuya's own documentation is
-written in DPs, so DP numbers are the bridge between Tuya docs and Zigbee clusters — but a DP
-existing does not mean the device reports it.
-_Avoid_: attribute (that word belongs to ZCL)
+A numbered value in Tuya's own model of a device, as the cloud and the app see it. Tuya's
+documentation, the cloud API and the app are all written in DPs, so DP numbers are the bridge
+between Tuya's world and Zigbee — but a DP existing does not mean the device reports it, and it
+says nothing about how the value travels over the air. That is the DP Carrier.
+_Avoid_: attribute (that word belongs to ZCL); "0xEF00 value" (only one of the carriers)
+
+**DP Carrier**:
+How a DP is actually transmitted on the air. Two are in use here: Tuya's private MCU protocol on
+cluster 0xEF00, or a manufacturer-reserved command or attribute on an otherwise standard cluster.
+The SP9-200-14 driver has an 0xEF00 cluster and uses **none** of it for its DPs — brightness rides
+a Level cluster command, colour temperature a Color cluster command. Knowing a DP number tells you
+nothing about its carrier, and mistaking the two has already cost this project a wrong conclusion:
+`16-SP9-200-10-sniff-findings.md` read a work_mode command as an end-of-drag marker.
+_Avoid_: transport, encoding, DP mapping
 
 **Phantom Endpoint**:
 An endpoint a device advertises that drives no physical hardware. Removed by the quirk so it does

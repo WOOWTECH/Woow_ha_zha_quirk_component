@@ -38,8 +38,9 @@ every write with `READ_ONLY 0x88` (27/27, including writes from the Tuya gateway
 accepts them and the firmware genuinely enforces the window — on HA `move_to_level` and on the
 physical wall button alike.
 
-Full evidence: `sniffer-related/TS0052-FINDINGS.md`, section "V1 vs V2 differential", and issue
-[#6](https://github.com/WOOWTECH/Woow_ha_zha_quirk_component/issues/6).
+Full evidence: `sniffer-related/TS0052-FINDINGS.md`, section "V1 vs V2 differential" (gitignored,
+local-only). The issue that carried this investigation has since been deleted, so this ADR is the
+only surviving record of the decision.
 
 ## Decision
 

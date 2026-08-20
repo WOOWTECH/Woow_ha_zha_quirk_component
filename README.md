@@ -116,7 +116,7 @@ looked unused at first. Measured on the air against the Tuya gateway, 2026-08-20
 |---------|---------|-----------|-----|-------------|-------------|
 | Gang 1 / Gang 2 state | 0x0006 | `on_off` | 1, 2 | `binary_sensor` (Standard) | Read-only on/off mirror of the physical gang state |
 | Gang 1 / Gang 2 brightness | 0x0008 | `current_level` | 1, 2 | `sensor` (Standard, %) | Read-only slide-dim level, 0-254 raw shown as 0-100 % |
-| Gang 1 / Gang 2 min brightness | 0xEF00 | DP 103 / DP 104 | 1 | `number` (Config, %, 5-50) | Floor of the slide-to-dim travel, per gang. Written with Tuya `send_data` (0x04); read back from the read-only mirror `min_level` (0x0002). A DP write always reports success, so the entity state is a request, not a reading — see ADR 0007 |
+| Gang 1 / Gang 2 min brightness | 0xEF00 | DP 103 / DP 104 | 1 | `number` (Config, %, 5-50) | Floor of the slide-to-dim travel, per gang. Written with Tuya `send_data` (0x04); read back from the read-only mirror `min_level` (0x0002). **The setting is 1-based, so the Brightness sensor reads one point lower at the floor** — set 50 and the slide bottoms out at 49 %; to land on 50 %, set 51. Neither entity is adjusted to hide this: the number matches the Tuya app, the sensor matches what percent means elsewhere. A DP write always reports success, so the entity state is a request, not a reading — see ADR 0007 |
 | Status Light | 0x0006 | `backlight_mode` (0x8001) | 1 | Config (`select`) | Close (0, off) / Switch Status (1, LED on when gang ON) / Switch Position (2, LED on when gang OFF) |
 
 **Control note (operator-verified):** the device is a *remote* — its server OnOff

@@ -147,6 +147,40 @@ Two traps, both paid for in full:
     back — never by looking at the entity.  See
     ``docs/adr/0007-tuya-dp-writes-never-fail-loudly.md``.
 
+The percent you set is 1-based, so the floor lands one point lower
+.................................................................
+The minimum you set and the percentage the Brightness sensor reports at the
+bottom of the slide differ by exactly one point, every time:
+
+    Gang N Brightness at the floor  ==  Gang N Min Brightness - 1
+
+Measured (setting -> raw ``current_level`` at the floor -> sensor):
+
+    50 -> 125 -> 49 %        10 -> 23 -> 9 %
+     9 ->  20 ->  8 %         5 -> 10 -> 4 %
+
+The device's minimum-brightness percent is **1-based** — 1 % means "no floor",
+raw 0 — so it converts as ``raw = round((pct - 1) * 255/100)``, while the
+Brightness sensor is 0-based (``raw / 254``).  Both are internally consistent;
+they simply count from different origins.
+
+**Neither is bent to match the other**, deliberately: the number shows what the
+Tuya app shows for the same setting (and this device does get paired back to the
+app), and the sensor means what "percent" means for every other dimmer in this
+repo.  Aligning them would make one of the two lie to something outside HA.
+Practical consequence for the user: to land the floor on 50 %, set 51.
+
+Evidence level: the formula is fitted to four measured settings (5, 9, 10, 50)
+and then evaluated arithmetically over the exposed range — the -1 rule holds for
+all 46 values from 5 to 50, under half-up and banker's rounding alike (they
+differ only at 31, raw 76 vs 77, which displays as 30 % either way).  **The
+middle of the range, 11..49, has no measurement behind it**, and the panel's
+slide ladder is discrete, so a setting there could in principle floor on a
+neighbouring step.  Over the full 1..100 range the rule breaks at exactly one
+value — 93, where raw 235 displays as 93 % rather than 92 % — a consequence of
+the 254-vs-255 full-scale mismatch.  That value is outside the 5..50 bounds this
+quirk exposes, and it is the reason to re-measure before widening them.
+
 The 5..50 bounds on the two numbers are **inferred, not read**: they are the
 values the device received when the operator drove the Tuya app slider to each
 end, captured on the air.  The app's own labelled range was never read, because

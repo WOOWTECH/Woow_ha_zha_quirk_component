@@ -72,7 +72,9 @@ _Avoid_: backlight mode, LED mode
 ### Settings that do not stick
 
 Three firmware failures look identical from Home Assistant — a setting that "does not work" — and
-they have different remedies. Never say a setting is "not saved" without saying which of these it is.
+they have different remedies. A fourth impostor is not a firmware failure at all: an unreachable
+device (see **Optimistic DP Echo**), which has already been misfiled here once. Never say a setting
+is "not saved" without saying which of these it is.
 Misclassifying one of these as another has already cost this project a wrong conclusion and a
 feature that was removed while it was in fact working.
 
@@ -108,6 +110,16 @@ Concluding that a setting works because the device returns the value that was wr
 Uncommitted Setting the read reports storage, so it agrees with the write no matter what the device
 is actually doing. The only honest test is to make the device act and observe the result.
 _Avoid_: verified, confirmed stored — say which of the two was confirmed
+
+**Optimistic DP Echo**:
+A control that looks healthy because it is echoing our own write, not the device's state. On a Tuya
+hybrid device a DP write updates the local attribute cache **without the device answering**, while a
+standard ZCL write updates it only on a Write Attributes Response. An unreachable device therefore
+keeps every DP-backed entity moving and freezes only its standard-ZCL ones — impersonating one broken
+control on an otherwise working device. Rule out before diagnosing any single control: `available`
+stays `True` for two hours after a device stops answering, so read `last_seen`, not the availability
+flag. This produced issue #8 in full.
+_Avoid_: the device is online — say when it last spoke; partial failure
 
 **Desired Indicator Mode**:
 The Indicator Mode value the user last successfully wrote, remembered separately from whatever the

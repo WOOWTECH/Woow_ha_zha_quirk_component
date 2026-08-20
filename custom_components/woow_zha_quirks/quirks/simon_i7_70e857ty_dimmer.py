@@ -1,9 +1,41 @@
 """ZHA Quirk (v3) for the Simon i7 0-10V Smart Dimming Remote Switch.
 
 渥屋 catalog: "17-70E857TY"
-Manufacturer: _TZ3000_qe3d5gga
+Manufacturer: _TZ3210_qe3d5gga   (was _TZ3000_qe3d5gga — see "Identity history")
 Model:        TS1002
 IEEE (test rig): e0:79:8d:ff:fe:b2:d0:42
+
+Identity history — this SKU changed its manufacturer string on OTA
+------------------------------------------------------------------
+The bench unit was updated on 2026-08-20 and came back as a *different
+manufacturer* on the same IEEE:
+
+                        | before             | after
+  manufacturer (0x0004) | _TZ3000_qe3d5gga   | _TZ3210_qe3d5gga
+  app_version  (0x0001) | 129 (0x81)         | 134 (0x86)
+  model        (0x0005) | TS1002             | TS1002 (unchanged)
+  EP1/EP2 input         | ... 0xE002         | ... 0xE002 + 0xEF00 (new)
+
+``QuirkBuilder`` matches on manufacturer + model, so the update dropped the
+match outright: ZHA reported ``quirk_class = zigpy.device.Device`` and the
+device reverted to stock entities (2 switches, Identify, 2 firmware rows) with
+no error, no log line and no unavailable entity.  This file now registers the
+NEW string only — **a unit still on ``_TZ3000_qe3d5gga`` gets no quirk from
+here.**  That is a deliberate trade, recorded in
+``docs/adr/0006-ota-can-change-the-manufacturer-match-key.md``.
+
+``app_version`` is written down here rather than matched on: ZHA reads only
+manufacturer_name and model_identifier at join, so the value is not populated
+when quirks are selected (ADR 0003 measured the same defect on
+``firmware_version_filter``).
+
+Two caveats that follow from the update:
+  * ``0xEF00`` (Tuya MCU) is new and is NOT handled by this quirk.  Whether the
+    gang state and the slide-dim level still travel over the standard 0x0006 /
+    0x0008 clusters on this firmware, or have moved to Tuya datapoints, needs an
+    operator at the panel to settle.
+  * Every "operator-verified" claim below was measured on **app_version 129**.
+    Re-verification on 134 is pending.
 
 What the device is
 ------------------
@@ -19,7 +51,8 @@ Real signature (mains powered, ZigBee Router)
   Endpoint 1 & 2 (identical):
     profile 0x0104, device_type 0x0104 (DIMMER_SWITCH)
     input  (server): 0x0000 Basic, 0x0003 Identify, 0x0004 Groups,
-                     0x0006 OnOff, 0x0008 LevelControl, 0xE002 (Tuya mfg)
+                     0x0006 OnOff, 0x0008 LevelControl, 0xE002 (Tuya mfg),
+                     0xEF00 (Tuya MCU — app_version 134 and later only)
     output (client): 0x0003, 0x0006, 0x0008, 0x0019 OTA, 0x0300 Color
   Endpoint 242: Green Power proxy (ZHA skips it)
 
@@ -159,7 +192,7 @@ def _is_switch(e) -> bool:
     return getattr(e, "PLATFORM", "") == "switch"
 
 
-_builder = QuirkBuilder("_TZ3000_qe3d5gga", "TS1002")
+_builder = QuirkBuilder("_TZ3210_qe3d5gga", "TS1002")
 
 # ── EP1/EP2: OnOff → Tuya OnOff superset (carries on_off + backlight_mode 0x8001).
 #    The device rejects on/off (it's a remote), so the default Switch can't control

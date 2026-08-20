@@ -67,10 +67,16 @@ supposed to be running, and every later change would have to be reasoned about t
   separable by the match key — but only by accident, and only in one direction. It does not
   generalise, and it does not rehabilitate registration-time firmware branching: 0003's timing
   objection (the value is unpopulated when quirks are matched) is untouched by this.
-- **`0xEF00` is now present and unhandled.** The quirk does not touch it. Whether the gang state and
-  the slide-dim level still travel over the standard `0x0006` / `0x0008` clusters on this firmware,
-  or have moved to Tuya datapoints, is unverified — it can only be answered with an operator at the
-  panel, and the quirk's two Brightness sensors depend on the answer.
+- **`0xEF00` is now present, and it is not decoration.** *(Amended 2026-08-20 — the original text
+  said it was unused. That was wrong, and the reason it looked unused is worth keeping.)* Gang state
+  and slide-dim level do still travel over the standard `0x0006` / `0x0008` clusters; the new cluster
+  carries something else entirely — the per-gang **minimum brightness** (DP 103 / DP 104), which the
+  Tuya app exposes and ZHA previously could not reach. The first ZHA session logged no `0xEF00`
+  traffic at all, which read as "the device never uses it". The real cause was narrower: nothing had
+  ever addressed it with the command code this firmware accepts. zhaquirks writes datapoints with
+  `set_data` (0x00) by default and this device answers `UNSUP_CLUSTER_COMMAND 0x81` to that; the Tuya
+  gateway uses `send_data` (0x04), and so must we. See
+  `0007-tuya-dp-writes-never-fail-loudly.md` and the min-brightness findings.
 
 ## Scope
 

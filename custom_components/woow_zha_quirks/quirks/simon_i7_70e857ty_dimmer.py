@@ -29,13 +29,16 @@ manufacturer_name and model_identifier at join, so the value is not populated
 when quirks are selected (ADR 0003 measured the same defect on
 ``firmware_version_filter``).
 
-Two caveats that follow from the update:
-  * ``0xEF00`` (Tuya MCU) is new and is NOT handled by this quirk.  Whether the
-    gang state and the slide-dim level still travel over the standard 0x0006 /
-    0x0008 clusters on this firmware, or have moved to Tuya datapoints, needs an
-    operator at the panel to settle.
-  * Every "operator-verified" claim below was measured on **app_version 129**.
-    Re-verification on 134 is pending.
+Both questions the update opened were settled at the panel on 2026-08-20, with
+an operator present and zigpy debug capture running:
+  * ``0xEF00`` is declared in the signature but **this device never uses it**.
+    Across the whole session — taps and slow full-range slides on both gangs —
+    ZHA logged not one 0xEF00 frame from `0x824A`, while two other Tuya devices
+    on the same coordinator filled the same log with datapoint traffic (a clean
+    negative control).  Every state change arrived as a standard ZCL
+    ``Report_Attributes`` on 0x0006 / 0x0008.  The quirk does not touch it.
+  * **All five operator-verified claims below still hold on app_version 134.**
+    Each carries its own 134 evidence inline.
 
 What the device is
 ------------------
@@ -76,7 +79,9 @@ It trims the device to the desired set (2 binary_sensors + 2 sensors + 1 select)
   * suppress the control-less default Switch on each gang (replaced by a
     binary_sensor — see the control note),
   * suppress the native StartUpOnOff "power-on behaviour" select on both gangs
-    (this device has no Tuya power-on datapoint; the attribute does nothing),
+    (this device has no Tuya power-on datapoint; the attribute does nothing —
+    re-checked on app_version 134: 0x4003 reads None on both endpoints and a
+    write leaves it None),
   * suppress the Identify button, and
   * collapse the duplicate per-endpoint firmware/OTA "update" entities.
 
@@ -84,6 +89,12 @@ Status-light values are operator-verified live (see ``WoowStatusLight``).
 
 Dimming note (operator-verified 2026-08-19)
 -------------------------------------------
+Re-verified on app_version 134, 2026-08-20: both gangs still push.  A tap emits
+``Report_Attributes(0x0000, Bool)`` on 0x0006 and a slide emits
+``Report_Attributes(0x0000, uint8)`` on 0x0008 — gang 1 walked 170 -> 255 -> 240
+-> 137 -> 23 and gang 2 walked 28 -> 63 -> 146 -> 229 -> 255 -> 225 -> 138 -> 23,
+each report reaching the sensor within a second.  No polling involved.
+
 ``current_level`` (0x0008 / 0x0000) on each gang **does** record the slide-dim
 level, contrary to the earlier assumption that it was a static parameter.  Live
 over-the-air reads (``allow_cache=False``) while an operator slid gang 2 from
@@ -105,6 +116,10 @@ sibling SM0502 carries (0xFC00 / 0xFC01) do not exist here.
 
 Control note (operator-verified)
 --------------------------------
+Re-verified on app_version 134, 2026-08-20: all four commands (on/off x EP1/EP2)
+came back ``DefaultResponse(status=UNSUP_CLUSTER_COMMAND: 129)`` **from the
+device**, and the operator watching the panel saw no lamp move.
+
 This is a *remote* — its server OnOff cluster rejects ``on``/``off`` with
 ``UNSUP_CLUSTER_COMMAND`` (the real 0-10V load is driven by the separate Simon
 converter module, not present in ZHA), so a ``switch`` entity could never
@@ -149,6 +164,12 @@ class WoowLevelControlCluster(CustomCluster, LevelControl):
     brightness to a percent-scaled sensor — and keeps full brightness readable as
     100 %.  Reads go through ``_update_attribute`` as well as reports, so both
     paths are covered.
+
+    **Still required on app_version 134** (re-verified 2026-08-20): sliding either
+    gang to the top puts the raw frame ``0a 00 00 20 ff`` on the air — uint8 255,
+    not the ZCL 254 — on EP1 (15:53:08) and EP2 (15:53:31) alike, and the sensor
+    read 100 % rather than blanking.  Remove this clamp and full brightness goes
+    back to ``unknown``.
     """
 
     _CURRENT_LEVEL = LevelControl.AttributeDefs.current_level.id  # 0x0000
@@ -164,6 +185,13 @@ class WoowLevelControlCluster(CustomCluster, LevelControl):
 #   0 = LED always off
 #   1 = LED lit when the gang is ON   (status indicator)
 #   2 = LED lit when the gang is OFF  (locator / find-in-dark)
+# Re-verified value by value on app_version 134 (2026-08-20, operator at the panel):
+#   Close           -> LED stayed dark with the gang both off and on
+#   Switch_Status   -> dark when off, lit when on
+#   Switch_Position -> lit when off, dark when on  (exact inverse, as labelled)
+# The writes also round-trip on 134 through the entity path, and a write on EP1 is
+# mirrored on EP2 — which is why one device-global select is correct rather than
+# one per gang.
 # Labels match the 渥屋/Tuya app and the sibling "3-70E8304" device
 # (see WoowIndicatorMode in simon_i7_s2100.py). ZHA renders select options as
 # `name.replace("_", " ")`, so member names use underscores for spaces.

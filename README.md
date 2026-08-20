@@ -102,9 +102,13 @@ Standard ZCL switches (genOnOff), NOT Tuya MCU devices.
 
 ### Simon i7 17-70E857TY (`_TZ3210_qe3d5gga`, model `TS1002`)
 
-Standard ZCL device (NOT Tuya MCU). A 0-10V **dimming remote switch** (2-gang): the
+Standard ZCL device. A 0-10V **dimming remote switch** (2-gang): the
 wall unit pairs with a separate Simon 0-10V converter module that drives the actual
 lamp. Profile/device_type `0x0104` (DIMMER_SWITCH), two identical gang endpoints (1, 2).
+Firmware `app_version` 134 declares a `0xEF00` Tuya MCU cluster on both endpoints, but the
+device never speaks it — verified 2026-08-20 with an operator at the panel: taps and slides
+all arrive as standard ZCL `Report_Attributes` on `0x0006` / `0x0008`, and zigpy debug logged
+no `0xEF00` frame from this device at all. The quirk does not touch that cluster.
 
 | Feature | Cluster | Attribute | EP | Entity Type | Description |
 |---------|---------|-----------|-----|-------------|-------------|

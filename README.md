@@ -60,7 +60,7 @@
 | 14 | Simon SM0301 | 1-CH Curtain Controller | `_TYZB01_koulgwmy` | `simon_sm0301_curtain.py` | `cover` + `number` | Phantom EP2-4 removal, binary_sensor suppression, OnOff→Level open/close redirect, **time-based positioning** (accurate intermediate positions; native level positioning is nonlinear), no "device did not respond", Travel Time in seconds (1-180 s) |
 | 15 | Tuya 3-Gang Screen Switch | 3-Gang Touch Switch | `_TZE204_k7v0eqke` | `ts0601_switch_TZE204_k7v0eqke.py` | `switch` | Screen label auto-sync, countdown timer, child lock, LED colors |
 | 16 | Simon 10-66E8025 | TS0726 8-Gang Scene+Switch Panel | `_TZ3210_5nd2aydx` | `ts0726_scene_switch_TZ3210_5nd2aydx.py` | `switch` + `select` | 8 switches mapped EP1-8 = physical switches 1-8 (phantom EP9 removed), all gangs force-set to regular-relay (Switch) mode on startup — scene mode disabled, mode selects removed (0xE001 0xD020), indicator LED mode (Close / Off white On orange / Off orange On white — each option is an *off-colour/on-colour pair*, same wording as the 66E8015 dimmer), dead StartUpOnOff selects suppressed, firmware entities collapsed to 1 |
-| 17 | Simon i7 17-70E857TY | TS1002 0-10V Smart Dimming Remote Switch (2-gang) | `_TZ3000_qe3d5gga` | `simon_i7_70e857ty_dimmer.py` | `binary_sensor` + `sensor` + `select` | 2 gang On/Off **binary_sensors** (Gang 1 / Gang 2) that **mirror** the physical wall-switch state — device is a remote whose server OnOff rejects on/off (`UNSUP_CLUSTER_COMMAND`), so the control-less default switches are suppressed and replaced with read-only binary_sensors; 2 per-gang Brightness **sensors** (%) fed by the slide-dim `current_level`, which reports on push; single device-global Status Light indicator mode (Close / Switch Status / Switch Position), Identify button + duplicate firmware/OTA entities removed, dead StartUpOnOff selects suppressed |
+| 17 | Simon i7 17-70E857TY | TS1002 0-10V Smart Dimming Remote Switch (2-gang) | `_TZ3210_qe3d5gga` | `simon_i7_70e857ty_dimmer.py` | `binary_sensor` + `sensor` + `select` | 2 gang On/Off **binary_sensors** (Gang 1 / Gang 2) that **mirror** the physical wall-switch state — device is a remote whose server OnOff rejects on/off (`UNSUP_CLUSTER_COMMAND`), so the control-less default switches are suppressed and replaced with read-only binary_sensors; 2 per-gang Brightness **sensors** (%) fed by the slide-dim `current_level`, which reports on push; single device-global Status Light indicator mode (Close / Switch Status / Switch Position), Identify button + duplicate firmware/OTA entities removed, dead StartUpOnOff selects suppressed |
 | 18 | Simon 4-58E8017 | TS0034 Rotary CCT Knob (controller) | `_TZ3000_ocqo8iwd` | `simon_58e8017_knob.py` | `zha_event` + `binary_sensor` + `sensor` ×2 | Rotary knob remote — press → OnOff `on`/`off`, rotate → LevelControl `step` (up/down), colour-mode rotate → **Tuya `0xE0`** decoded to a clean `tuya_set_color_temp` event (cluster 768, `temp_value` 0-1000). Also exposes 3 read-only **entities** reflecting its actions: On/Off `binary_sensor`, Colour Temperature `sensor` (0–100%), Brightness `sensor` (0–100%, approx). Stock Identify button + firmware/OTA `update` entity suppressed. **Needs a group bind** (knob multicasts to group `0x2760`; ZHA's unicast bind-to-coordinator is ignored by the Tuya firmware) — **the component now creates this automatically** on (re-)pair, plus a `woow_zha_quirks.rebind_knob` service to force it (see `knob_rebind.py`) |
 | 19 | Simon 2-58E8002 | 2-Gang Smart Switch | `_TZ2000_euqqstyrbiynph3m` | `simon_58e8002_switch.py` | `switch` + `select` | 2 native OnOff gangs; `TuyaZBOnOffAttributeCluster` surfaces the indicator LED mode (Close / Switch Status / Switch Position); dead StartUpOnOff + firmware/OTA entities suppressed |
 | 20 | Simon 3-70E8304 (S2100-1004 variant) | 4-Gang Smart Switch | `_TZ2000_kgwm3i4o4klbuaks` | `simon_i7_s2100.py` | `switch` | Second 4-gang variant registered by the Simon i7 builder; Indicator LED + All On/Off virtual endpoint |
@@ -100,11 +100,15 @@ Standard ZCL switches (genOnOff), NOT Tuya MCU devices.
 
 ---
 
-### Simon i7 17-70E857TY (`_TZ3000_qe3d5gga`, model `TS1002`)
+### Simon i7 17-70E857TY (`_TZ3210_qe3d5gga`, model `TS1002`)
 
-Standard ZCL device (NOT Tuya MCU). A 0-10V **dimming remote switch** (2-gang): the
+Standard ZCL device. A 0-10V **dimming remote switch** (2-gang): the
 wall unit pairs with a separate Simon 0-10V converter module that drives the actual
 lamp. Profile/device_type `0x0104` (DIMMER_SWITCH), two identical gang endpoints (1, 2).
+Firmware `app_version` 134 declares a `0xEF00` Tuya MCU cluster on both endpoints, but the
+device never speaks it — verified 2026-08-20 with an operator at the panel: taps and slides
+all arrive as standard ZCL `Report_Attributes` on `0x0006` / `0x0008`, and zigpy debug logged
+no `0xEF00` frame from this device at all. The quirk does not touch that cluster.
 
 | Feature | Cluster | Attribute | EP | Entity Type | Description |
 |---------|---------|-----------|-----|-------------|-------------|

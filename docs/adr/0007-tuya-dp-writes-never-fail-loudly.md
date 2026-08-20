@@ -74,8 +74,11 @@ is the discipline above, not a patch.
 
 - **ADR 0003's "failing loudly" standard is scoped to standard ZCL attributes.** It does not extend
   to Tuya DPs, and reasoning that assumes it does will be wrong in exactly the cases that matter.
-- **A DP control's entity state is a *request*, not a *reading*** — unless it is fed by a mirror.
-  On the 70E857TY the Min Brightness numbers read `unknown` after a restart until something writes
-  them; that is honest behaviour and should not be "fixed" with a fabricated default.
+- **A DP control's entity state is a *request*, not a *reading*** — unless it is fed by a mirror,
+  and a populated-looking number is not proof that it is. On the 70E857TY the Min Brightness numbers
+  came up `unknown` on the first load of a fresh quirk, and came up showing `10` after a restart that
+  followed a write of 10. Those two observations are consistent with the zigpy attribute cache
+  replaying the last value *this coordinator wrote*, and nothing in the UI distinguishes that from a
+  reading taken off the device. Trust the mirror, not the number.
 - **This changes how these devices get debugged.** The first question about a Tuya control that
   "does nothing" is no longer "did the write fail?" but "did anyone ever confirm the write landed?"

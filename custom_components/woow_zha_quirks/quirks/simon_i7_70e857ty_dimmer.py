@@ -31,12 +31,12 @@ when quirks are selected (ADR 0003 measured the same defect on
 
 Both questions the update opened were settled at the panel on 2026-08-20, with
 an operator present and zigpy debug capture running:
-  * ``0xEF00`` is declared in the signature but **this device never uses it**.
-    Across the whole session — taps and slow full-range slides on both gangs —
-    ZHA logged not one 0xEF00 frame from `0x824A`, while two other Tuya devices
-    on the same coordinator filled the same log with datapoint traffic (a clean
-    negative control).  Every state change arrived as a standard ZCL
-    ``Report_Attributes`` on 0x0006 / 0x0008.  The quirk does not touch it.
+  * ``0xEF00`` carries the per-gang **minimum brightness** — see its own section
+    below.  Gang state and slide-dim level do NOT travel over it: every state
+    change in that session arrived as a standard ZCL ``Report_Attributes`` on
+    0x0006 / 0x0008, and the cluster stayed silent throughout.  That silence was
+    first read as "the device never uses it"; the real cause was that nothing had
+    addressed it with the command code this firmware accepts (2026-08-20).
   * **All five operator-verified claims below still hold on app_version 134.**
     Each carries its own 134 evidence inline.
 
@@ -114,6 +114,46 @@ The rest of the LevelControl attributes (0x0010-0x0014, 0x4000) answer
 UNSUPPORTED_ATTRIBUTE, and the manufacturer min/max-brightness attributes the
 sibling SM0502 carries (0xFC00 / 0xFC01) do not exist here.
 
+Minimum brightness, per gang — Tuya DP 103 / 104 (measured 2026-08-20)
+----------------------------------------------------------------------
+The Tuya app offers a per-circuit "minimum brightness", and it is the setting
+that decides where a slide-to-dim gesture bottoms out.  It is NOT a display
+scale: with the minimum at 10 the slide floors at raw ``current_level`` 23 (9 %),
+at 50 it floors at 125 (49 %), at 5 it floors at 10 (4 %).  The panel remaps its
+whole travel onto ``[minimum .. 255]``.
+
+Sniffed off the Tuya gateway (PAN 0x5d4b / ch20) while an operator set both
+circuits, then reproduced from ZHA:
+
+  write path : cluster 0xEF00, **server command 0x04 ``send_data``**, endpoint 1
+               DP 0x67 (103) = gang 1, DP 0x68 (104) = gang 2
+               type 0x02 (value), 4 bytes, the value is a PERCENT
+  read path  : LevelControl ``min_level`` (0x0002) on the gang's own endpoint is
+               a live **read-only mirror** of that DP — writing DP 104 = 25 makes
+               ep2 ``min_level`` read 25, writing 10 makes it read 10.  Writes to
+               0x0002 itself are refused with ``READ_ONLY 0x88`` on both gangs.
+
+Two traps, both paid for in full:
+
+  * **zhaquirks writes datapoints with ``set_data`` (0x00) by default, and this
+    firmware answers ``UNSUP_CLUSTER_COMMAND 0x81`` to that.**  Hence
+    ``add_to_registry(mcu_write_command=TUYA_SEND_DATA)`` below — without it the
+    numbers look like they work and change nothing.  This is also why the cluster
+    appeared unused: nobody had ever spoken its dialect.
+  * **A DP write always reports success.**  ``TuyaMCUCluster.write_attributes()``
+    returns a hard-coded SUCCESS and updates the local attribute regardless of
+    what the device answers, so the entity showed 9 while the device was
+    rejecting the frame outright.  Confirm every DP write by reading ``min_level``
+    back — never by looking at the entity.  See
+    ``docs/adr/0007-tuya-dp-writes-never-fail-loudly.md``.
+
+The 5..50 bounds on the two numbers are **inferred, not read**: they are the
+values the device received when the operator drove the Tuya app slider to each
+end, captured on the air.  The app's own labelled range was never read, because
+by the time the question mattered the device had left the Tuya network.  Whether
+the app also offers a *maximum* brightness is likewise unconfirmed — no second
+datapoint was ever seen, and the two gangs' datapoints are fully independent.
+
 Control note (operator-verified)
 --------------------------------
 Re-verified on app_version 134, 2026-08-20: all four commands (on/off x EP1/EP2)
@@ -131,11 +171,13 @@ tapped, so we model the two gangs as read-only **binary_sensor** entities
 import enum
 import logging
 
+import zigpy.types as t
 from zigpy.quirks import CustomCluster
-from zigpy.quirks.v2 import EntityType, QuirkBuilder
+from zigpy.quirks.v2 import EntityType
 from zigpy.zcl.clusters.general import Identify, LevelControl, OnOff, Ota
 
-from zhaquirks.tuya import TuyaZBOnOffAttributeCluster
+from zhaquirks.tuya import TUYA_SEND_DATA, TuyaZBOnOffAttributeCluster
+from zhaquirks.tuya.builder import TuyaQuirkBuilder
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -220,7 +262,7 @@ def _is_switch(e) -> bool:
     return getattr(e, "PLATFORM", "") == "switch"
 
 
-_builder = QuirkBuilder("_TZ3210_qe3d5gga", "TS1002")
+_builder = TuyaQuirkBuilder("_TZ3210_qe3d5gga", "TS1002")
 
 # ── EP1/EP2: OnOff → Tuya OnOff superset (carries on_off + backlight_mode 0x8001).
 #    The device rejects on/off (it's a remote), so the default Switch can't control
@@ -283,5 +325,37 @@ for _ep in _ENDPOINTS:
         entity_type=EntityType.CONFIG,
         translation_key="status_light",
         fallback_name="Status Light",
-    ).add_to_registry()
+    )
+    # ── Per-gang minimum brightness (Tuya DP 103 / 104 on EP1) ──
+    # The floor of the slide-to-dim travel. Bounds are the values the Tuya app
+    # sent at each end of its slider (5 and 50) — see the docstring on why they
+    # are inferred rather than read.
+    .tuya_number(
+        dp_id=103,
+        type=t.uint32_t,
+        attribute_name="gang_1_min_brightness",
+        min_value=5,
+        max_value=50,
+        step=1,
+        unit="%",
+        entity_type=EntityType.CONFIG,
+        translation_key="gang_1_min_brightness",
+        fallback_name="Gang 1 Min Brightness",
+    )
+    .tuya_number(
+        dp_id=104,
+        type=t.uint32_t,
+        attribute_name="gang_2_min_brightness",
+        min_value=5,
+        max_value=50,
+        step=1,
+        unit="%",
+        entity_type=EntityType.CONFIG,
+        translation_key="gang_2_min_brightness",
+        fallback_name="Gang 2 Min Brightness",
+    )
+    # mcu_write_command is the whole ballgame: this firmware rejects the default
+    # set_data (0x00) with UNSUP_CLUSTER_COMMAND 0x81 and only accepts send_data
+    # (0x04) — the command the Tuya gateway itself uses. Measured 2026-08-20.
+    .add_to_registry(mcu_write_command=TUYA_SEND_DATA)
 )

@@ -147,39 +147,34 @@ Two traps, both paid for in full:
     back — never by looking at the entity.  See
     ``docs/adr/0007-tuya-dp-writes-never-fail-loudly.md``.
 
-The percent you set is 1-based, so the floor lands one point lower
-.................................................................
-The minimum you set and the percentage the Brightness sensor reports at the
-bottom of the slide differ by exactly one point, every time:
+The percent scale is the device's, and it is 1-based
+...................................................
+Minimum brightness is a percent in the firmware's own units, where **1 % means
+raw 0** — no floor at all.  The panel converts it as
+``raw = round((pct - 1) * 255/100)``, exact at all four measured settings:
 
-    Gang N Brightness at the floor  ==  Gang N Min Brightness - 1
+    setting 50 -> raw 125      setting 10 -> raw 23
+    setting  9 -> raw  20      setting  5 -> raw 10
 
-Measured (setting -> raw ``current_level`` at the floor -> sensor):
+The Brightness sensor therefore reports on that same scale
+(``min(100, round(raw / 255 * 100) + 1)``, see ``_level_to_pct``) rather than on
+a plain fraction of full scale.  With that, **sliding a gang to the bottom reads
+back exactly the Min Brightness you set** — 46 out of 46 settings across the
+exposed 5..50 range, monotonic over all 256 raw values.
 
-    50 -> 125 -> 49 %        10 -> 23 -> 9 %
-     9 ->  20 ->  8 %         5 -> 10 -> 4 %
+Before this, the two disagreed by exactly one point everywhere (set 50, slide to
+the bottom, read 49 %), and that offset was briefly kept on the grounds that the
+number should match what the Tuya app displays.  That premise was never verified
+— nobody read the app's UI — and it lost to the precedent already written into
+``ts0052_dimmer_TZ3002_cqpubrcz.py``, which picks its 100 % reference expressly
+so limits and brightness line up.  ``docs/adr/0008-one-percent-scale-per-device.md``
+has the rule and the reversal.
 
-The device's minimum-brightness percent is **1-based** — 1 % means "no floor",
-raw 0 — so it converts as ``raw = round((pct - 1) * 255/100)``, while the
-Brightness sensor is 0-based (``raw / 254``).  Both are internally consistent;
-they simply count from different origins.
-
-**Neither is bent to match the other**, deliberately: the number shows what the
-Tuya app shows for the same setting (and this device does get paired back to the
-app), and the sensor means what "percent" means for every other dimmer in this
-repo.  Aligning them would make one of the two lie to something outside HA.
-Practical consequence for the user: to land the floor on 50 %, set 51.
-
-Evidence level: the formula is fitted to four measured settings (5, 9, 10, 50)
-and then evaluated arithmetically over the exposed range — the -1 rule holds for
-all 46 values from 5 to 50, under half-up and banker's rounding alike (they
-differ only at 31, raw 76 vs 77, which displays as 30 % either way).  **The
-middle of the range, 11..49, has no measurement behind it**, and the panel's
-slide ladder is discrete, so a setting there could in principle floor on a
-neighbouring step.  Over the full 1..100 range the rule breaks at exactly one
-value — 93, where raw 235 displays as 93 % rather than 92 % — a consequence of
-the 254-vs-255 full-scale mismatch.  That value is outside the 5..50 bounds this
-quirk exposes, and it is the reason to re-measure before widening them.
+Evidence level: the firmware's formula is fitted to those four settings and then
+evaluated arithmetically over the range.  **Settings 11..49 have never been
+measured**, and the panel's slide ladder is discrete, so a mid-range setting
+could in principle floor on a neighbouring step.  One measurement at 25 would
+close it.
 
 The 5..50 bounds on the two numbers are **inferred, not read**: they are the
 values the device received when the operator drove the Tuya app slider to each
@@ -220,8 +215,9 @@ IDENTIFY = Identify.cluster_id  # 0x0003
 LEVEL = LevelControl.cluster_id  # 0x0008
 OTA = Ota.cluster_id  # 0x0019
 
-# current_level full scale, after WoowLevelControlCluster clamps the firmware's
-# out-of-spec 255 down to the ZCL maximum.
+# The ZCL maximum WoowLevelControlCluster clamps the firmware's out-of-spec 255
+# down to.  It is NOT the reference for the percent conversion — that is 255, the
+# device's own full scale; see _level_to_pct.
 LEVEL_FULL_SCALE = 254
 
 _ENDPOINTS = (1, 2)  # the two gangs
@@ -278,12 +274,27 @@ class WoowStatusLight(enum.IntEnum):
 
 
 def _level_to_pct(value):
-    """current_level 0..255 -> 0..100 %. None-safe for the UI."""
+    """current_level -> percent **on this device's own 1-based scale**. None-safe.
+
+    This is the inverse of the firmware's own conversion.  Minimum brightness is
+    a Tuya percent where 1 % means raw 0, and the panel floors a slide at
+    ``round((pct - 1) * 255/100)``; inverting that gives
+    ``round(raw / 255 * 100) + 1``.  Using it here is what makes "set the minimum
+    to 50, slide to the bottom, read 50 %" true — on a plain ``raw / 254`` scale
+    the same slide reads 49 %.  Checked over the exposed 5..50 range: the floor
+    equals the Min Brightness number for all 46 settings.  See
+    ``docs/adr/0008-one-percent-scale-per-device.md``.
+
+    Two edges follow from the 1-based origin and are deliberate:
+      * raw 0 reads 1 %, not 0 % — the scale has no zero.  Unreachable in
+        practice while the minimum is 5 or above, whose floor is raw 10.
+      * raw 252..255 all read 100 % (it was 253..254 before).
+    """
     try:
-        v = max(0, min(LEVEL_FULL_SCALE, int(value)))
+        v = max(0, min(255, int(value)))
     except (TypeError, ValueError):
         return None
-    return round(v / LEVEL_FULL_SCALE * 100)
+    return min(100, round(v / 255 * 100) + 1)
 
 
 def _is_button(e) -> bool:

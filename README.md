@@ -112,11 +112,16 @@ slide-dim level do **not** go through it — taps and slides all arrive as stand
 default `set_data` (0x00) is rejected with `UNSUP_CLUSTER_COMMAND 0x81`, which is why the cluster
 looked unused at first. Measured on the air against the Tuya gateway, 2026-08-20.
 
+> **Upgrade note.** The Brightness sensors moved to the device's 1-based percent scale, so every
+> reading is one point higher than the previous release reported (raw 127: 50 % before, 51 % now).
+> Nothing on the device changed and the Min Brightness numbers are untouched — only the sensor's
+> conversion. The point of the change is that the floor of a slide now equals the minimum you set.
+
 | Feature | Cluster | Attribute | EP | Entity Type | Description |
 |---------|---------|-----------|-----|-------------|-------------|
 | Gang 1 / Gang 2 state | 0x0006 | `on_off` | 1, 2 | `binary_sensor` (Standard) | Read-only on/off mirror of the physical gang state |
-| Gang 1 / Gang 2 brightness | 0x0008 | `current_level` | 1, 2 | `sensor` (Standard, %) | Read-only slide-dim level, 0-254 raw shown as 0-100 % |
-| Gang 1 / Gang 2 min brightness | 0xEF00 | DP 103 / DP 104 | 1 | `number` (Config, %, 5-50) | Floor of the slide-to-dim travel, per gang. Written with Tuya `send_data` (0x04); read back from the read-only mirror `min_level` (0x0002). **The setting is 1-based, so the Brightness sensor reads one point lower at the floor** — set 50 and the slide bottoms out at 49 %; to land on 50 %, set 51. Neither entity is adjusted to hide this: the number matches the Tuya app, the sensor matches what percent means elsewhere. A DP write always reports success, so the entity state is a request, not a reading — see ADR 0007 |
+| Gang 1 / Gang 2 brightness | 0x0008 | `current_level` | 1, 2 | `sensor` (Standard, %) | Read-only slide-dim level, reported on **this device's own 1-based percent scale** (`min(100, round(raw/255*100)+1)`) so that it agrees with Min Brightness — slide a gang to the bottom and it reads back exactly the minimum you set. Consequences of the 1-based origin: raw 0 reads 1 % (there is no zero on this scale, and it is unreachable while the minimum is >= 5), and raw 252-255 all read 100 %. See ADR 0008 |
+| Gang 1 / Gang 2 min brightness | 0xEF00 | DP 103 / DP 104 | 1 | `number` (Config, %, 5-50) | Floor of the slide-to-dim travel, per gang. Written with Tuya `send_data` (0x04); read back from the read-only mirror `min_level` (0x0002). The value is the device's own percent, and it is 1-based (1 % means raw 0, no floor): the panel converts it as `round((pct-1)*255/100)`. The Brightness sensor uses the same scale, so **the floor reads back the number you set** — verified for all 46 settings from 5 to 50. A DP write always reports success, so the entity state is a request, not a reading — see ADR 0007 |
 | Status Light | 0x0006 | `backlight_mode` (0x8001) | 1 | Config (`select`) | Close (0, off) / Switch Status (1, LED on when gang ON) / Switch Position (2, LED on when gang OFF) |
 
 **Control note (operator-verified):** the device is a *remote* — its server OnOff

@@ -15,8 +15,12 @@ pytest_plugins = "pytest_homeassistant_custom_component"
 
 
 @pytest.fixture(autouse=True)
-def auto_enable_custom_integrations(enable_custom_integrations):
-    """Let Home Assistant find custom_components/woow_zha_quirks."""
+def auto_enable_custom_integrations(hass, enable_custom_integrations):
+    """Let Home Assistant find custom_components/woow_zha_quirks.
+
+    `hass` has to be requested here as well: `enable_custom_integrations` reaches into
+    `hass.data`, and without the dependency it is handed the un-awaited async generator.
+    """
     yield
 
 

@@ -1039,3 +1039,22 @@ This project is licensed under the [MIT License](LICENSE).
 <p align="center">
   Made with &#10084; by <a href="https://github.com/WOOWTECH">WOOWTECH</a>
 </p>
+
+---
+
+## Running the tests
+
+Two suites, deliberately separate — `tests/standalone/conftest.py` stubs `homeassistant.*`
+into `sys.modules`, so it cannot share a process with a real Home Assistant.
+
+```bash
+# Fast, no dependencies: quirk logic and the climate wrapper's state machine
+pytest tests/standalone
+
+# Setup mechanism against a real Home Assistant (needs Linux + Python 3.14)
+pip install -r requirements-test.txt
+pytest tests/ha
+```
+
+`tests/ha` cannot run on Windows: `homeassistant.runner` imports `fcntl`. Use WSL, a
+container, or CI.

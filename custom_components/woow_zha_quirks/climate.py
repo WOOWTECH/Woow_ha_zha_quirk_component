@@ -63,6 +63,7 @@ from homeassistant.const import (
     STATE_UNKNOWN,
     UnitOfTemperature,
 )
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.event import (
@@ -71,7 +72,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.start import async_at_start
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import slugify
 
 _LOGGER = logging.getLogger(__name__)
@@ -193,13 +194,18 @@ SM0308C_SPEC = DeviceSpec(
 DEVICE_SPECS: list[DeviceSpec] = [SM0308F_SPEC, SM0308C_SPEC]
 
 
-async def async_setup_platform(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
-    async_add_entities,
-    discovery_info: DiscoveryInfoType | None = None,
+    entry: ConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the WOOW climate platform (auto-discovery for all DEVICE_SPECS)."""
+    """Set up the WOOW climate platform (auto-discovery for all DEVICE_SPECS).
+
+    Forwarded from the config entry since 1.4.0 (it used to be a discovery platform set up
+    by async_load_platform). Unique ids are unchanged, so the existing entity registry rows
+    are re-pointed at the entry rather than replaced -- see
+    docs/adr/0005-config-entry-setup.md.
+    """
     # ieee -> device-registry id of the device we built a climate for. Keyed by IEEE
     # (stable across a re-pair) but tied to the *device entry* so a remove+re-add (which
     # produces a fresh device id) rebuilds the climate without an HA restart. Cleared by
@@ -316,14 +322,18 @@ async def async_setup_platform(
             )
             _discover()
 
-    # discover at startup (ZHA entities exist by then) and on later device/entity changes
-    async_at_start(hass, _discover)
-    hass.bus.async_listen(dr.EVENT_DEVICE_REGISTRY_UPDATED, _discover)
-    hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, _on_entity_added)
+    # discover at startup (ZHA entities exist by then) and on later device/entity changes.
+    # All four hang off the config entry so a reload does not leave a second discover loop
+    # and a second watchdog running against the same devices.
+    entry.async_on_unload(async_at_start(hass, _discover))
+    entry.async_on_unload(hass.bus.async_listen(dr.EVENT_DEVICE_REGISTRY_UPDATED, _discover))
+    entry.async_on_unload(
+        hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, _on_entity_added)
+    )
     # Platform-level watchdog. It deliberately does NOT hang off an entity: the failure it
     # covers is "the climate is gone and nothing rebuilt it", and an entity that no longer
     # exists cannot poll itself.
-    async_track_time_interval(hass, _discover, WATCHDOG_INTERVAL)
+    entry.async_on_unload(async_track_time_interval(hass, _discover, WATCHDOG_INTERVAL))
 
 
 def _object_id(device_name: str) -> str:

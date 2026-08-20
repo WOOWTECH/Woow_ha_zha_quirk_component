@@ -835,7 +835,7 @@ Click the button below to add this repository directly to HACS:
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=WOOWTECH&repository=Woow_ha_zha_quirk_component&category=integration)
 
-After adding, search for **WOOW ZHA Quirks** in HACS and click **Install**, then add `woow_zha_quirks:` to `configuration.yaml` and restart.
+After adding, search for **WOOW ZHA Quirks** in HACS and click **Install**, restart Home Assistant, then add the integration from **Settings → Devices & Services → Add Integration → WOOW ZHA Quirks**.
 
 ### HACS (Manual Steps)
 
@@ -844,13 +844,8 @@ After adding, search for **WOOW ZHA Quirks** in HACS and click **Install**, then
 3. Enter `https://github.com/WOOWTECH/Woow_ha_zha_quirk_component`
 4. Select category **Integration**
 5. Search for **WOOW ZHA Quirks** &rarr; Install
-6. Add to `configuration.yaml`:
-
-```yaml
-woow_zha_quirks:
-```
-
-7. Restart Home Assistant
+6. Restart Home Assistant
+7. Go to **Settings &rarr; Devices & Services &rarr; Add Integration**, search for **WOOW ZHA Quirks** and confirm
 
 ### Manual Installation
 
@@ -873,6 +868,11 @@ config/
         ├── quirk_priority.py
         ├── quirk_heal.py
         ├── orphan_sweep.py
+        ├── const.py
+        ├── config_flow.py
+        ├── repairs.py
+        ├── strings.json
+        ├── translations/              # en, zh-Hant
         ├── brand/                     # HACS icon/logo images
         └── quirks/
             ├── __init__.py
@@ -881,24 +881,34 @@ config/
             └── ... (31 more quirk files)
 ```
 
-3. Add `woow_zha_quirks:` to `configuration.yaml`
-4. Restart Home Assistant
+3. Restart Home Assistant
+4. Go to **Settings &rarr; Devices & Services &rarr; Add Integration**, search for **WOOW ZHA Quirks** and confirm
 
 ---
 
 ## Configuration
 
-After installation, add the following to your `configuration.yaml`:
-
-```yaml
-woow_zha_quirks:
-```
-
-That's it. No additional configuration is needed. The component automatically:
+There is nothing to configure. Add the integration once from **Settings &rarr; Devices & Services
+&rarr; Add Integration &rarr; WOOW ZHA Quirks** and confirm the single screen; only one entry is
+possible. From then on the component automatically:
 
 - Discovers and loads all quirk modules at startup
 - Registers them into zigpy's device registry
 - ZHA will match your devices to the correct quirk on next restart
+
+### Upgrading from 1.3.x — action required
+
+**1.4.0 removes setup through `configuration.yaml`.** The `woow_zha_quirks:` key no longer does
+anything, and until you add the integration from the UI the runtime hooks (knob rebind, relay
+re-sync, scene-switch activation, presence defaults, quirk self-heal, orphan sweep) and the
+climate entities for the AC panels will not run.
+
+If you left the `woow_zha_quirks:` line in `configuration.yaml`, Home Assistant shows a **repair**
+notification after the upgrade — confirm it and the entry is created for you, then delete the
+line. Otherwise add the integration manually from **Settings → Devices & Services**.
+
+Your quirks themselves keep working throughout; only the hooks and the climate entities depend on
+the entry. Reasoning and rejected alternatives: `docs/adr/0005-config-entry-setup.md`.
 
 ### Important Notes
 
@@ -917,7 +927,10 @@ Woow_ha_zha_quirk_component/
 │   └── woow_zha_quirks/
 │       ├── __init__.py                                     # Auto-loader (pkgutil.walk_packages)
 │       ├── manifest.json                                   # HA component manifest
-│       ├── services.yaml                                   # Service definitions (activate_scene_switches, rebind_knob, apply_presence_defaults)
+│       ├── services.yaml                                   # Service definitions (activate_scene_switches, rebind_knob, apply_presence_defaults, resync_relay)
+│       ├── const.py                                         # Side-effect-free constants (imported by config_flow.py)
+│       ├── config_flow.py                                   # UI setup (single entry, no options)
+│       ├── repairs.py                                       # Repair flow migrating a 1.3.x YAML install
 │       ├── climate.py                                      # HA-core climate platform (SM0308F/SM0308C wrappers)
 │       ├── scene_activate.py                               # Press-enablement hook: group+scene+bind (TS0034/TS0022 press → HA)
 │       ├── knob_rebind.py                                  # Auto group-bind + rebind_knob service (58E8017 knob)
@@ -1026,3 +1039,22 @@ This project is licensed under the [MIT License](LICENSE).
 <p align="center">
   Made with &#10084; by <a href="https://github.com/WOOWTECH">WOOWTECH</a>
 </p>
+
+---
+
+## Running the tests
+
+Two suites, deliberately separate — `tests/standalone/conftest.py` stubs `homeassistant.*`
+into `sys.modules`, so it cannot share a process with a real Home Assistant.
+
+```bash
+# Fast, no dependencies: quirk logic and the climate wrapper's state machine
+pytest tests/standalone
+
+# Setup mechanism against a real Home Assistant (needs Linux + Python 3.14)
+pip install -r requirements-test.txt
+pytest tests/ha
+```
+
+`tests/ha` cannot run on Windows: `homeassistant.runner` imports `fcntl`. Use WSL, a
+container, or CI.
